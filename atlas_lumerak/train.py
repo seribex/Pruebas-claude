@@ -71,6 +71,8 @@ def main():
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--eval_interval", type=int, default=500)
+    parser.add_argument("--save_interval", type=int, default=2000,
+                        help="Cada cuantos pasos guardar el progreso (0 para desactivar).")
     parser.add_argument(
         "--resume_from",
         default=None,
@@ -245,6 +247,20 @@ def main():
     # inutiles (no habria forma de traducir texto a numeros y de vuelta).
     tokenizer.save(os.path.join(args.out_dir, info_tokenizador["archivo"]))
 
+    checkpoint_path = os.path.join(args.out_dir, "atlas_lumerak.pt")
+
+    def guardar(ruta: str) -> None:
+        estado = {
+            "model_state_dict": model.state_dict(),
+            "config": model_config,
+            "tokenizador": info_tokenizador,
+        }
+        # Se escribe primero a un archivo temporal y recien despues se
+        # renombra: si el proceso muere a mitad de la escritura, el
+        # checkpoint anterior queda intacto en vez de quedar corrupto.
+        torch.save(estado, ruta + ".tmp")
+        os.replace(ruta + ".tmp", ruta)
+
     start_time = time.time()
     for step in range(args.steps):
         xb, yb = get_batch(train_data, block_size, args.batch_size, device)
@@ -270,7 +286,11 @@ def main():
                 f"{elapsed:.0f}s transcurridos"
             )
 
-    checkpoint_path = os.path.join(args.out_dir, "atlas_lumerak.pt")
+        # Guardado intermedio: en una corrida de muchas horas, perder todo
+        # por un corte de luz o un error a ultimo momento no es aceptable.
+        if args.save_interval > 0 and step > 0 and step % args.save_interval == 0:
+            guardar(os.path.join(args.out_dir, "atlas_lumerak_parcial.pt"))
+            print(f"    (progreso guardado en el paso {step:,})", flush=True)
 
     # Nunca sobrescribir en silencio un checkpoint anterior: si ya existe
     # uno (por ejemplo, el que se esta usando como base con --resume_from),
@@ -282,14 +302,10 @@ def main():
         os.replace(checkpoint_path, backup_path)
         print(f"Checkpoint anterior respaldado en: {backup_path}")
 
-    torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "config": model_config,
-            "tokenizador": info_tokenizador,
-        },
-        checkpoint_path,
-    )
+    guardar(checkpoint_path)
+    parcial = os.path.join(args.out_dir, "atlas_lumerak_parcial.pt")
+    if os.path.exists(parcial):
+        os.remove(parcial)  # ya no hace falta: el definitivo esta completo
     print(f"\nModelo guardado en: {checkpoint_path}")
 
     start = torch.zeros((1, 1), dtype=torch.long, device=device)

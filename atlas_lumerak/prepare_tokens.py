@@ -98,7 +98,15 @@ def codificar_archivos(rutas: list[str], tok: BPETokenizer, ruta_salida: str) ->
 
 def main():
     parser = argparse.ArgumentParser(description="Entrena BPE y pre-codifica el corpus.")
-    parser.add_argument("--data", nargs="+", required=True)
+    parser.add_argument("--data", nargs="+", required=True,
+                        help="Archivos a convertir en tokens.")
+    parser.add_argument("--bpe_data", nargs="+", default=None,
+                        help="Archivos con los que APRENDER el tokenizador (por defecto, los mismos "
+                             "de --data). Util para que el tokenizador conozca todos los registros "
+                             "del proyecto aunque esta corrida solo codifique uno de ellos.")
+    parser.add_argument("--reuse_bpe", default=None,
+                        help="Reutilizar un tokenizador ya entrenado en vez de aprender uno nuevo. "
+                             "Imprescindible para que dos corpus queden en el mismo 'idioma' de tokens.")
     parser.add_argument("--out_dir", default="atlas_lumerak/data")
     parser.add_argument("--vocab_size", type=int, default=8192)
     parser.add_argument("--train_sample_chars", type=int, default=50_000_000,
@@ -110,14 +118,15 @@ def main():
         raise ValueError("vocab_size no puede pasar de 65535 (los tokens se guardan como uint16).")
 
     os.makedirs(args.out_dir, exist_ok=True)
-    ruta_tok = os.path.join(args.out_dir, f"{args.nombre}_bpe.json")
+    ruta_tok = args.reuse_bpe or os.path.join(args.out_dir, f"{args.nombre}_bpe.json")
 
     if os.path.exists(ruta_tok):
         print(f"Reutilizando tokenizador existente: {ruta_tok}")
         tok = BPETokenizer.load(ruta_tok)
     else:
-        print(f"Tomando muestra de {args.train_sample_chars:,} caracteres del corpus...")
-        muestra = tomar_muestra(args.data, args.train_sample_chars)
+        fuentes_bpe = args.bpe_data or args.data
+        print(f"Tomando muestra de {args.train_sample_chars:,} caracteres de: {', '.join(fuentes_bpe)}")
+        muestra = tomar_muestra(fuentes_bpe, args.train_sample_chars)
         print(f"Muestra obtenida: {len(muestra):,} caracteres\n")
 
         print("Entrenando BPE...")
