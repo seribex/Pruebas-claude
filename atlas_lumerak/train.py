@@ -17,9 +17,11 @@ import math
 import os
 import time
 
+import numpy as np
 import torch
 
 from tokenizer import CharTokenizer
+from bpe_tokenizer import BPETokenizer
 from model import TransformerLanguageModel
 
 
@@ -77,6 +79,16 @@ def main():
         default=None,
         help="Vocabulario del checkpoint a continuar (por defecto: vocab.json junto al checkpoint).",
     )
+    parser.add_argument(
+        "--tokens",
+        default=None,
+        help="Archivo .npy con el corpus ya codificado por prepare_tokens.py (modo BPE).",
+    )
+    parser.add_argument(
+        "--bpe",
+        default=None,
+        help="Tokenizador BPE (por defecto: se deduce del nombre del archivo de tokens).",
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -89,35 +101,54 @@ def main():
 
     torch.manual_seed(42)
 
-    text = ""
-    for path in args.data:
-        with open(path, encoding="utf-8") as f:
-            text += f.read() + "\n\n"
-    print(f"Archivos combinados: {', '.join(args.data)}")
-
     resume_ckpt = None
     if args.resume_from:
         resume_ckpt = torch.load(args.resume_from, map_location="cpu")
-        vocab_path = args.resume_vocab or os.path.join(os.path.dirname(args.resume_from), "vocab.json")
-        tokenizer = CharTokenizer.load(vocab_path)
-
-        # El checkpoint que estamos continuando tiene un vocabulario fijo.
-        # Si los datos nuevos traen caracteres que no existian antes, se
-        # descartan (no se puede agrandar el vocabulario de un modelo ya
-        # entrenado sin cambiar su forma interna).
-        texto_filtrado = "".join(c for c in text if c in tokenizer.char_to_id)
-        descartados = len(text) - len(texto_filtrado)
-        if descartados:
-            print(f"Aviso: se descartaron {descartados} caracteres no presentes en el vocabulario original.")
-        text = texto_filtrado
-
-        # La arquitectura debe ser identica a la del checkpoint -- se usa
-        # su configuracion guardada, no las banderas de linea de comandos.
-        model_config = resume_ckpt["config"]
         print(f"Continuando entrenamiento desde: {args.resume_from}")
+
+    # --- Tokenizador y datos ---
+    if args.tokens:
+        # Modo BPE: el corpus ya viene convertido a numeros por
+        # prepare_tokens.py, asi que no hay que procesar texto aca.
+        ruta_bpe = args.bpe or args.tokens.replace("_tokens.npy", "_bpe.json")
+        tokenizer = BPETokenizer.load(ruta_bpe)
+        data = torch.from_numpy(np.load(args.tokens).astype(np.int64))
+        info_tokenizador = {"tipo": "bpe", "archivo": os.path.basename(ruta_bpe)}
+        print(f"Tokens pre-codificados: {args.tokens} ({len(data):,} tokens)")
+        print(f"Tokenizador BPE: {ruta_bpe} ({tokenizer.vocab_size:,} simbolos)")
+    else:
+        # Modo caracteres (el original).
+        text = ""
+        for path in args.data:
+            with open(path, encoding="utf-8") as f:
+                text += f.read() + "\n\n"
+        print(f"Archivos combinados: {', '.join(args.data)}")
+
+        if resume_ckpt is not None:
+            vocab_path = args.resume_vocab or os.path.join(os.path.dirname(args.resume_from), "vocab.json")
+            tokenizer = CharTokenizer.load(vocab_path)
+            # El checkpoint que se continua tiene un vocabulario fijo: si
+            # los datos nuevos traen caracteres que antes no existian, se
+            # descartan (agrandar el vocabulario cambiaria la forma
+            # interna del modelo y los pesos ya no encajarian).
+            texto_filtrado = "".join(c for c in text if c in tokenizer.char_to_id)
+            descartados = len(text) - len(texto_filtrado)
+            if descartados:
+                print(f"Aviso: se descartaron {descartados} caracteres fuera del vocabulario original.")
+            text = texto_filtrado
+        else:
+            tokenizer = CharTokenizer(text)
+
+        data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
+        info_tokenizador = {"tipo": "char", "archivo": "vocab.json"}
+        print(f"Corpus: {len(text):,} caracteres | vocabulario: {tokenizer.vocab_size} simbolos")
+
+    # --- Arquitectura ---
+    if resume_ckpt is not None:
+        # Debe ser identica a la del checkpoint, no la de la linea de comandos.
+        model_config = resume_ckpt["config"]
         print(f"Configuracion heredada del checkpoint: {model_config}")
     else:
-        tokenizer = CharTokenizer(text)
         model_config = {
             "vocab_size": tokenizer.vocab_size,
             "n_embd": args.n_embd,
@@ -126,13 +157,10 @@ def main():
             "block_size": args.block_size,
         }
 
-    data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
     n = int(0.9 * len(data))
     train_data = data[:n]
     val_data = data[n:]
-
-    print(f"Corpus: {len(text):,} caracteres | vocabulario: {tokenizer.vocab_size} simbolos")
-    print(f"Entrenamiento: {len(train_data):,} caracteres | validacion: {len(val_data):,} caracteres")
+    print(f"Entrenamiento: {len(train_data):,} tokens | validacion: {len(val_data):,} tokens")
 
     # La tasa de aprendizaje correcta depende de si el modelo es nuevo o si
     # ya esta entrenado. Continuar entrenando con la misma tasa "alta" que
@@ -201,7 +229,9 @@ def main():
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     os.makedirs(args.out_dir, exist_ok=True)
-    tokenizer.save(os.path.join(args.out_dir, "vocab.json"))
+    # Se guarda el tokenizador junto al modelo: sin el, los pesos son
+    # inutiles (no habria forma de traducir texto a numeros y de vuelta).
+    tokenizer.save(os.path.join(args.out_dir, info_tokenizador["archivo"]))
 
     start_time = time.time()
     for step in range(args.steps):
@@ -241,7 +271,11 @@ def main():
         print(f"Checkpoint anterior respaldado en: {backup_path}")
 
     torch.save(
-        {"model_state_dict": model.state_dict(), "config": model_config},
+        {
+            "model_state_dict": model.state_dict(),
+            "config": model_config,
+            "tokenizador": info_tokenizador,
+        },
         checkpoint_path,
     )
     print(f"\nModelo guardado en: {checkpoint_path}")

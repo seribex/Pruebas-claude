@@ -7,14 +7,14 @@ import argparse
 
 import torch
 
-from tokenizer import CharTokenizer
-from model import TransformerLanguageModel
+from checkpoint_utils import cargar_modelo
 
 
 def main():
     parser = argparse.ArgumentParser(description="Genera texto con un Atlas Lumerak ya entrenado.")
     parser.add_argument("--checkpoint", default="atlas_lumerak/checkpoints/atlas_lumerak.pt")
-    parser.add_argument("--vocab", default="atlas_lumerak/checkpoints/vocab.json")
+    parser.add_argument("--vocab", default=None,
+                        help="Tokenizador (por defecto: el que indique el checkpoint, en su misma carpeta).")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--length", type=int, default=500)
     parser.add_argument("--temperature", type=float, default=0.8)
@@ -22,20 +22,11 @@ def main():
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, tokenizer, _ = cargar_modelo(args.checkpoint, device, args.vocab)
 
-    tokenizer = CharTokenizer.load(args.vocab)
-    checkpoint = torch.load(args.checkpoint, map_location=device)
-
-    model = TransformerLanguageModel(**checkpoint["config"]).to(device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    model.eval()
-
-    if args.prompt:
-        start_ids = tokenizer.encode(args.prompt)
-    else:
-        start_ids = [0]
-
+    start_ids = tokenizer.encode(args.prompt) if args.prompt else [0]
     idx = torch.tensor([start_ids], dtype=torch.long, device=device)
+
     output = model.generate(
         idx,
         max_new_tokens=args.length,
