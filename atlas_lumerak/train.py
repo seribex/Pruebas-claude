@@ -153,11 +153,20 @@ def main():
     autocast_ctx = torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=(device == "cuda"))
 
     if device == "cuda":
+        # torch.compile() en si nunca falla -- solo "envuelve" el modelo.
+        # El error real (por ejemplo, si falta Triton en el sistema) recien
+        # aparece la PRIMERA VEZ que el modelo compilado se usa de verdad.
+        # Por eso forzamos un paso de prueba aca dentro, en vez de solo
+        # envolver la llamada a torch.compile en el try/except.
+        compiled_model = torch.compile(model)
         try:
-            model = torch.compile(model)
+            xb_test, yb_test = get_batch(train_data, block_size, args.batch_size, device)
+            with autocast_ctx:
+                compiled_model(xb_test, yb_test)
+            model = compiled_model
             print("torch.compile activado (el primer paso tardara un poco mas mientras compila).")
         except Exception as e:
-            print(f"Aviso: no se pudo activar torch.compile ({e}), se sigue sin el.")
+            print(f"Aviso: no se pudo activar torch.compile ({type(e).__name__}: {e}), se sigue sin el.")
 
     # El optimizador "fusionado" actualiza todos los parametros en una sola
     # operacion en la GPU en vez de una por una -- mismo resultado, mas rapido.
