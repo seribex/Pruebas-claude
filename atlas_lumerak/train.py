@@ -73,6 +73,9 @@ def main():
     parser.add_argument("--eval_interval", type=int, default=500)
     parser.add_argument("--save_interval", type=int, default=2000,
                         help="Cada cuantos pasos guardar el progreso (0 para desactivar).")
+    parser.add_argument("--weight_decay", type=float, default=0.1)
+    parser.add_argument("--tie_weights", action="store_true",
+                        help="Compartir la tabla de entrada y la de salida (recomendado en modelos nuevos).")
     parser.add_argument(
         "--resume_from",
         default=None,
@@ -169,6 +172,7 @@ def main():
             "n_head": args.n_head,
             "n_layer": args.n_layer,
             "block_size": args.block_size,
+            "tie_weights": args.tie_weights,
         }
 
     n = int(0.9 * len(data))
@@ -220,13 +224,27 @@ def main():
         except Exception as e:
             print(f"Aviso: no se pudo activar torch.compile ({type(e).__name__}: {e}), se sigue sin el.")
 
+    # El "decaimiento de pesos" empuja los parametros hacia cero para que el
+    # modelo no dependa demasiado de valores extremos. Pero solo tiene
+    # sentido en las matrices grandes: aplicarselo a los sesgos y a los
+    # parametros de LayerNorm (que ajustan escala, no representan
+    # conocimiento) es contraproducente. Por eso van en dos grupos.
+    con_decaimiento = [p for p in model.parameters() if p.requires_grad and p.dim() >= 2]
+    sin_decaimiento = [p for p in model.parameters() if p.requires_grad and p.dim() < 2]
+    grupos = [
+        {"params": con_decaimiento, "weight_decay": args.weight_decay},
+        {"params": sin_decaimiento, "weight_decay": 0.0},
+    ]
+    print(f"Decaimiento de pesos {args.weight_decay} sobre {len(con_decaimiento)} matrices; "
+          f"0.0 sobre {len(sin_decaimiento)} sesgos/LayerNorm")
+
     # El optimizador "fusionado" actualiza todos los parametros en una sola
     # operacion en la GPU en vez de una por una -- mismo resultado, mas rapido.
     try:
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, fused=(device == "cuda"))
+        optimizer = torch.optim.AdamW(grupos, lr=args.lr, fused=(device == "cuda"))
     except (RuntimeError, TypeError) as e:
         print(f"Aviso: no se pudo usar el optimizador fusionado ({e}), usando el normal.")
-        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+        optimizer = torch.optim.AdamW(grupos, lr=args.lr)
 
     # Tasa de aprendizaje: empieza baja, sube gradualmente (warmup) para no
     # desestabilizar el entrenamiento al inicio, y despues baja suavemente

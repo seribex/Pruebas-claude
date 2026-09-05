@@ -16,6 +16,8 @@ solo que mas rapido. Ver migrate_checkpoint.py para pasar un checkpoint
 entrenado con la version anterior a esta.
 """
 
+import math
+
 import torch
 import torch.nn as nn
 from torch.nn import functional as F
@@ -81,6 +83,7 @@ class TransformerLanguageModel(nn.Module):
         n_head: int = 4,
         n_layer: int = 4,
         block_size: int = 128,
+        tie_weights: bool = False,
     ):
         super().__init__()
         self.block_size = block_size
@@ -91,6 +94,41 @@ class TransformerLanguageModel(nn.Module):
         )
         self.ln_f = nn.LayerNorm(n_embd)
         self.lm_head = nn.Linear(n_embd, vocab_size)
+
+        if tie_weights:
+            # La tabla de entrada (letra -> vector) y la de salida
+            # (vector -> letra) resuelven el mismo problema en direcciones
+            # opuestas. Compartir una sola matriz ahorra parametros y suele
+            # mejorar la calidad en modelos chicos. Es lo que hace GPT-2.
+            #
+            # Por defecto viene desactivado para no romper checkpoints
+            # anteriores: si un checkpoint sin pesos atados se cargara en un
+            # modelo con pesos atados, las dos tablas se pisarian entre si
+            # en silencio, sin ningun error visible.
+            self.lm_head.weight = self.token_embedding_table.weight
+
+        # Inicializacion al estilo GPT-2. Por defecto, PyTorch inicializa
+        # los embeddings con desviacion 1.0, ~50 veces mas grande que el
+        # resto de la red; eso desbalancea el flujo residual desde el
+        # primer paso y hace que el entrenamiento arranque mas lento.
+        self.apply(self._init_weights)
+
+        # Las capas que escriben de vuelta al flujo residual se inicializan
+        # mas chicas todavia, en proporcion a la profundidad: con 12 bloques
+        # sumando al mismo flujo, sin esto la senal se acumula y crece
+        # descontroladamente con la profundidad.
+        for nombre, p in self.named_parameters():
+            if nombre.endswith("proj.weight") or nombre.endswith("net.2.weight"):
+                nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layer))
+
+    @staticmethod
+    def _init_weights(modulo):
+        if isinstance(modulo, nn.Linear):
+            nn.init.normal_(modulo.weight, mean=0.0, std=0.02)
+            if modulo.bias is not None:
+                nn.init.zeros_(modulo.bias)
+        elif isinstance(modulo, nn.Embedding):
+            nn.init.normal_(modulo.weight, mean=0.0, std=0.02)
 
     def forward(self, idx, targets=None):
         b, t = idx.shape
