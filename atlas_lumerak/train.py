@@ -67,6 +67,16 @@ def main():
     parser.add_argument("--steps", type=int, default=5000)
     parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--eval_interval", type=int, default=500)
+    parser.add_argument(
+        "--resume_from",
+        default=None,
+        help="Ruta a un checkpoint existente para seguir entrenando en vez de empezar de cero.",
+    )
+    parser.add_argument(
+        "--resume_vocab",
+        default=None,
+        help="Vocabulario del checkpoint a continuar (por defecto: vocab.json junto al checkpoint).",
+    )
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -85,7 +95,37 @@ def main():
             text += f.read() + "\n\n"
     print(f"Archivos combinados: {', '.join(args.data)}")
 
-    tokenizer = CharTokenizer(text)
+    resume_ckpt = None
+    if args.resume_from:
+        resume_ckpt = torch.load(args.resume_from, map_location="cpu")
+        vocab_path = args.resume_vocab or os.path.join(os.path.dirname(args.resume_from), "vocab.json")
+        tokenizer = CharTokenizer.load(vocab_path)
+
+        # El checkpoint que estamos continuando tiene un vocabulario fijo.
+        # Si los datos nuevos traen caracteres que no existian antes, se
+        # descartan (no se puede agrandar el vocabulario de un modelo ya
+        # entrenado sin cambiar su forma interna).
+        texto_filtrado = "".join(c for c in text if c in tokenizer.char_to_id)
+        descartados = len(text) - len(texto_filtrado)
+        if descartados:
+            print(f"Aviso: se descartaron {descartados} caracteres no presentes en el vocabulario original.")
+        text = texto_filtrado
+
+        # La arquitectura debe ser identica a la del checkpoint -- se usa
+        # su configuracion guardada, no las banderas de linea de comandos.
+        model_config = resume_ckpt["config"]
+        print(f"Continuando entrenamiento desde: {args.resume_from}")
+        print(f"Configuracion heredada del checkpoint: {model_config}")
+    else:
+        tokenizer = CharTokenizer(text)
+        model_config = {
+            "vocab_size": tokenizer.vocab_size,
+            "n_embd": args.n_embd,
+            "n_head": args.n_head,
+            "n_layer": args.n_layer,
+            "block_size": args.block_size,
+        }
+
     data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
     n = int(0.9 * len(data))
     train_data = data[:n]
@@ -94,13 +134,15 @@ def main():
     print(f"Corpus: {len(text):,} caracteres | vocabulario: {tokenizer.vocab_size} simbolos")
     print(f"Entrenamiento: {len(train_data):,} caracteres | validacion: {len(val_data):,} caracteres")
 
-    model = TransformerLanguageModel(
-        vocab_size=tokenizer.vocab_size,
-        n_embd=args.n_embd,
-        n_head=args.n_head,
-        n_layer=args.n_layer,
-        block_size=args.block_size,
-    ).to(device)
+    # A partir de aca, el tamano de contexto SIEMPRE es el de model_config
+    # (fijo por la arquitectura), nunca el de --block_size en la linea de
+    # comandos -- eso evita que, al continuar un entrenamiento, se arme un
+    # lote mas largo de lo que el modelo puede aceptar.
+    block_size = model_config["block_size"]
+
+    model = TransformerLanguageModel(**model_config).to(device)
+    if resume_ckpt is not None:
+        model.load_state_dict(resume_ckpt["model_state_dict"])
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parametros del modelo: {n_params:,}")
 
@@ -144,7 +186,7 @@ def main():
 
     start_time = time.time()
     for step in range(args.steps):
-        xb, yb = get_batch(train_data, args.block_size, args.batch_size, device)
+        xb, yb = get_batch(train_data, block_size, args.batch_size, device)
         with autocast_ctx:
             _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
@@ -158,7 +200,7 @@ def main():
         scheduler.step()
 
         if step % args.eval_interval == 0 or step == args.steps - 1:
-            losses = estimate_loss(model, train_data, val_data, args.block_size, args.batch_size, device, autocast_ctx)
+            losses = estimate_loss(model, train_data, val_data, block_size, args.batch_size, device, autocast_ctx)
             elapsed = time.time() - start_time
             print(
                 f"paso {step:5d}/{args.steps} | "
@@ -169,16 +211,7 @@ def main():
 
     checkpoint_path = os.path.join(args.out_dir, "atlas_lumerak.pt")
     torch.save(
-        {
-            "model_state_dict": model.state_dict(),
-            "config": {
-                "vocab_size": tokenizer.vocab_size,
-                "n_embd": args.n_embd,
-                "n_head": args.n_head,
-                "n_layer": args.n_layer,
-                "block_size": args.block_size,
-            },
-        },
+        {"model_state_dict": model.state_dict(), "config": model_config},
         checkpoint_path,
     )
     print(f"\nModelo guardado en: {checkpoint_path}")
