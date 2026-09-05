@@ -13,6 +13,8 @@ Ejemplo: si el texto solo tuviera "abc", el vocabulario seria {a, b, c} y
 "cab" se convertiria en [2, 0, 1].
 """
 
+import json
+
 
 class CharTokenizer:
     def __init__(self, text: str):
@@ -26,6 +28,22 @@ class CharTokenizer:
 
     def decode(self, ids: list[int]) -> str:
         return "".join(self.id_to_char[i] for i in ids)
+
+    def save(self, path: str) -> None:
+        # Guardamos el vocabulario para poder recrear el mismo tokenizador
+        # despues, sin depender de tener a mano el texto original completo.
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(self.char_to_id, f, ensure_ascii=False)
+
+    @classmethod
+    def load(cls, path: str) -> "CharTokenizer":
+        with open(path, encoding="utf-8") as f:
+            char_to_id = json.load(f)
+        tokenizer = cls.__new__(cls)
+        tokenizer.char_to_id = char_to_id
+        tokenizer.id_to_char = {i: ch for ch, i in char_to_id.items()}
+        tokenizer.vocab_size = len(char_to_id)
+        return tokenizer
 
 
 if __name__ == "__main__":
