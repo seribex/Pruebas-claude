@@ -13,6 +13,7 @@ vez que se quiera generar texto (eso lo hace generate.py).
 """
 
 import argparse
+import math
 import os
 import time
 
@@ -116,7 +117,27 @@ def main():
         except Exception as e:
             print(f"Aviso: no se pudo activar torch.compile ({e}), se sigue sin el.")
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+    # El optimizador "fusionado" actualiza todos los parametros en una sola
+    # operacion en la GPU en vez de una por una -- mismo resultado, mas rapido.
+    try:
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, fused=(device == "cuda"))
+    except (RuntimeError, TypeError) as e:
+        print(f"Aviso: no se pudo usar el optimizador fusionado ({e}), usando el normal.")
+        optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
+
+    # Tasa de aprendizaje: empieza baja, sube gradualmente (warmup) para no
+    # desestabilizar el entrenamiento al inicio, y despues baja suavemente
+    # (coseno) hacia el final -- ayuda al modelo a aprender mejor con la
+    # misma cantidad de pasos, no solo a ir mas rapido por paso.
+    warmup_steps = max(1, int(0.03 * args.steps))
+
+    def lr_lambda(step):
+        if step < warmup_steps:
+            return step / warmup_steps
+        progress = (step - warmup_steps) / max(1, args.steps - warmup_steps)
+        return 0.1 + 0.9 * 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+
+    scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
     os.makedirs(args.out_dir, exist_ok=True)
     tokenizer.save(os.path.join(args.out_dir, "vocab.json"))
@@ -128,7 +149,13 @@ def main():
             _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        # Evita que gradientes anormalmente grandes (poco frecuentes, pero
+        # posibles) den un paso demasiado brusco y desestabilicen el
+        # entrenamiento -- permite usar una tasa de aprendizaje mas alta
+        # con seguridad.
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
+        scheduler.step()
 
         if step % args.eval_interval == 0 or step == args.steps - 1:
             losses = estimate_loss(model, train_data, val_data, args.block_size, args.batch_size, device, autocast_ctx)
