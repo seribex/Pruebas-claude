@@ -15,25 +15,14 @@ aprenda ese patron de turnos durante el entrenamiento.
 """
 
 import argparse
-import unicodedata
 import urllib.request
 
 import pandas as pd
 
+from text_cleaning import limpiar_texto
+
 TRAIN_URL = "https://huggingface.co/datasets/OpenAssistant/oasst2/resolve/refs%2Fconvert%2Fparquet/default/train/0000.parquet"
 VAL_URL = "https://huggingface.co/datasets/OpenAssistant/oasst2/resolve/refs%2Fconvert%2Fparquet/default/validation/0000.parquet"
-
-
-def keep_char(c: str) -> bool:
-    if c.isascii():
-        return True
-    # Ojo: algunos simbolos/emojis (ej. "LATIN CROSS", letras encerradas en
-    # circulos) tienen "LATIN" en su nombre Unicode sin ser letras reales
-    # -- por eso exigimos ademas que la categoria sea de tipo "Letra" (L*).
-    cat = unicodedata.category(c)
-    if cat.startswith("L") and "LATIN" in unicodedata.name(c, ""):
-        return True
-    return c in "¡¿«»—–…‘’“”"
 
 
 def download(url: str, path: str) -> None:
@@ -82,7 +71,7 @@ def main():
     print(f"Pares pregunta-respuesta en espanol, de buena calidad: {len(pares)}")
 
     texto = "".join(f"Usuario: {p}\nAtlas: {r}\n\n" for p, r in pares)
-    texto_limpio = "".join(c for c in texto if keep_char(c))
+    texto_limpio = limpiar_texto(texto)
 
     with open(args.out, "w", encoding="utf-8") as f:
         f.write(texto_limpio)
