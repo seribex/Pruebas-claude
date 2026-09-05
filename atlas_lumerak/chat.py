@@ -1,26 +1,29 @@
 """
-Un chat simple en la terminal para conversar con Atlas Lumerak.
+Un chat en la terminal para conversar con Atlas Lumerak.
 
-Importante: el modelo actual solo aprendio a "continuar texto" (Quijote +
-Wikipedia), no a conversar -- no tiene un entrenamiento especifico de
-dialogo todavia (eso es el siguiente paso del proyecto). Asi que por
-ahora, en vez de "responder" a lo que escribas, va a intentar continuar
-el texto como si tu mensaje fuera el inicio de un parrafo. Sirve para
-probar el modelo mientras tanto, y esta misma herramienta la vamos a
-seguir usando cuando ya sepa conversar de verdad.
+Usa el mismo formato de turnos ("Usuario: ...\nAtlas: ...\n\n") que se
+usa para preparar los datos de conversacion (ver prepare_oasst2.py), asi
+que una vez que el modelo se entrene con esos datos, va a reconocer este
+patron y responder como dialogo real. Si todavia estas usando un modelo
+que solo vio Quijote + Wikipedia (sin conversaciones), esto se va a
+sentir mas como autocompletar texto que como una charla -- es esperado.
 
-Otra limitacion real para tener en cuenta: el modelo solo "recuerda"
-hasta BLOCK_SIZE caracteres hacia atras (lo que se configuro al
-entrenarlo). Si la conversacion se alarga mas que eso, las partes mas
-viejas simplemente dejan de ser visibles para el modelo.
+Ademas, guarda cada intercambio en un archivo, con tu calificacion de si
+la respuesta fue util o no. Esas conversaciones marcadas como utiles son
+las que despues se pueden sumar como datos nuevos para seguir mejorando
+a Atlas Lumerak.
 """
 
 import argparse
+import json
+import time
 
 import torch
 
 from tokenizer import CharTokenizer
 from model import TransformerLanguageModel
+
+STOP_MARKER = "\nUsuario:"
 
 
 def main():
@@ -28,6 +31,7 @@ def main():
     parser.add_argument("--checkpoint", default="atlas_lumerak/checkpoints/atlas_lumerak.pt")
     parser.add_argument("--vocab", default="atlas_lumerak/checkpoints/vocab.json")
     parser.add_argument("--response_length", type=int, default=200)
+    parser.add_argument("--log", default="atlas_lumerak/data/chat_log.jsonl")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -56,7 +60,7 @@ def main():
             print("Hasta luego.")
             break
 
-        context += user_input + "\n"
+        context += f"Usuario: {user_input}\nAtlas:"
 
         # Solo codificamos los caracteres que el modelo puede "ver"
         # (los ultimos block_size), y solo los que existen en su
@@ -67,10 +71,23 @@ def main():
         with torch.no_grad():
             out = model.generate(idx, max_new_tokens=args.response_length)[0].tolist()
 
-        respuesta = tokenizer.decode(out[idx.shape[1]:])
+        crudo = tokenizer.decode(out[idx.shape[1]:])
+        # El modelo no tiene una señal explicita de "aqui termino mi
+        # respuesta", asi que cortamos si empieza a inventar el
+        # siguiente turno de "Usuario:" por su cuenta.
+        respuesta = crudo.split(STOP_MARKER)[0].strip()
         print(f"Atlas: {respuesta}\n")
 
-        context += respuesta + "\n"
+        context += f" {respuesta}\n\n"
+
+        util = input("¿Fue util esta respuesta? (s/n, Enter para omitir): ").strip().lower()
+        with open(args.log, "a", encoding="utf-8") as f:
+            f.write(json.dumps({
+                "timestamp": time.time(),
+                "usuario": user_input,
+                "atlas": respuesta,
+                "util": util == "s" if util in ("s", "n") else None,
+            }, ensure_ascii=False) + "\n")
 
 
 if __name__ == "__main__":

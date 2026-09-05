@@ -49,7 +49,11 @@ def main():
     parser.add_argument(
         "--data",
         nargs="+",
-        default=["atlas_lumerak/data/quijote.txt", "atlas_lumerak/data/wikipedia_es.txt"],
+        default=[
+            "atlas_lumerak/data/quijote.txt",
+            "atlas_lumerak/data/wikipedia_es.txt",
+            "atlas_lumerak/data/conversaciones_oasst2.txt",
+        ],
         help="Uno o mas archivos de texto; se concatenan en un solo corpus de entrenamiento.",
     )
     parser.add_argument("--out_dir", default="atlas_lumerak/checkpoints")
