@@ -30,14 +30,15 @@ def get_batch(data: torch.Tensor, block_size: int, batch_size: int, device: str)
 
 
 @torch.no_grad()
-def estimate_loss(model, train_data, val_data, block_size, batch_size, device, eval_iters=50):
+def estimate_loss(model, train_data, val_data, block_size, batch_size, device, autocast_ctx, eval_iters=50):
     out = {}
     model.eval()
     for split, data in [("train", train_data), ("val", val_data)]:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
             xb, yb = get_batch(data, block_size, batch_size, device)
-            _, loss = model(xb, yb)
+            with autocast_ctx:
+                _, loss = model(xb, yb)
             losses[k] = loss.item()
         out[split] = losses.mean().item()
     model.train()
@@ -71,6 +72,9 @@ def main():
     print(f"Dispositivo detectado: {device}")
     if device == "cuda":
         print(f"GPU: {torch.cuda.get_device_name(0)}")
+        # cudnn.benchmark deja que la GPU elija automaticamente el algoritmo
+        # mas rapido para el tamano de datos que le estamos dando.
+        torch.backends.cudnn.benchmark = True
 
     torch.manual_seed(42)
 
@@ -99,6 +103,19 @@ def main():
     n_params = sum(p.numel() for p in model.parameters())
     print(f"Parametros del modelo: {n_params:,}")
 
+    # Precision mixta: en GPU, hace la mayoria de las cuentas en 16 bits
+    # (bfloat16) en vez de 32 -- usa el hardware especializado ("Tensor
+    # Cores") de las GPUs modernas para acelerar el entrenamiento, con
+    # perdida de precision insignificante para esto.
+    autocast_ctx = torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=(device == "cuda"))
+
+    if device == "cuda":
+        try:
+            model = torch.compile(model)
+            print("torch.compile activado (el primer paso tardara un poco mas mientras compila).")
+        except Exception as e:
+            print(f"Aviso: no se pudo activar torch.compile ({e}), se sigue sin el.")
+
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr)
 
     os.makedirs(args.out_dir, exist_ok=True)
@@ -107,13 +124,14 @@ def main():
     start_time = time.time()
     for step in range(args.steps):
         xb, yb = get_batch(train_data, args.block_size, args.batch_size, device)
-        _, loss = model(xb, yb)
+        with autocast_ctx:
+            _, loss = model(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         optimizer.step()
 
         if step % args.eval_interval == 0 or step == args.steps - 1:
-            losses = estimate_loss(model, train_data, val_data, args.block_size, args.batch_size, device)
+            losses = estimate_loss(model, train_data, val_data, args.block_size, args.batch_size, device, autocast_ctx)
             elapsed = time.time() - start_time
             print(
                 f"paso {step:5d}/{args.steps} | "
