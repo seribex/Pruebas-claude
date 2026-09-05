@@ -50,7 +50,7 @@ class BPETokenizer:
         return len(self.token_to_id)
 
     # ---------------------------------------------------------------
-    def train(self, texto: str, vocab_size: int, verbose: bool = True) -> None:
+    def train(self, texto: str, vocab_size: int, min_freq: int = 2, verbose: bool = True) -> None:
         # 1) Contar cuantas veces aparece cada palabra. Trabajar sobre
         #    palabras unicas (y su frecuencia) en vez de sobre todo el
         #    texto hace esto miles de veces mas rapido.
@@ -58,11 +58,23 @@ class BPETokenizer:
         if verbose:
             print(f"Palabras distintas: {len(frecuencias):,}")
 
-        palabras = [tuple(p) for p in frecuencias]
-        pesos = [frecuencias[p] for p in frecuencias]
+        # Las palabras que aparecen una sola vez (nombres propios raros,
+        # numeros sueltos) son casi la mitad del total y no influyen en
+        # que fusiones conviene aprender, pero si hacen el entrenamiento
+        # mucho mas lento. Se excluyen de esta etapa; despues igual se
+        # pueden codificar sin problema, en pedazos mas chicos.
+        todos_los_caracteres = sorted({c for p in frecuencias for c in p})
+        frecuentes = {p: n for p, n in frecuencias.items() if n >= min_freq}
+        if verbose:
+            print(f"Palabras usadas para aprender fusiones (>= {min_freq} apariciones): {len(frecuentes):,}")
 
-        # 2) Vocabulario base: todos los caracteres que aparecen.
-        caracteres = sorted({c for p in palabras for c in p})
+        palabras = [tuple(p) for p in frecuentes]
+        pesos = list(frecuentes.values())
+
+        # 2) Vocabulario base: todos los caracteres del texto, incluidos
+        #    los que solo aparecen en palabras raras (si no, esas palabras
+        #    no se podrian codificar despues).
+        caracteres = todos_los_caracteres
         vocabulario = list(caracteres)
         if verbose:
             print(f"Caracteres base: {len(caracteres)}")

@@ -29,7 +29,9 @@ def get_batch(data: torch.Tensor, block_size: int, batch_size: int, device: str)
     ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([data[i:i + block_size] for i in ix])
     y = torch.stack([data[i + 1:i + block_size + 1] for i in ix])
-    return x.to(device), y.to(device)
+    # .long() aca y no en todo el corpus: la capa de embeddings exige
+    # enteros de 64 bits, pero solo hace falta convertir este lote.
+    return x.long().to(device), y.long().to(device)
 
 
 @torch.no_grad()
@@ -110,9 +112,19 @@ def main():
     if args.tokens:
         # Modo BPE: el corpus ya viene convertido a numeros por
         # prepare_tokens.py, asi que no hay que procesar texto aca.
-        ruta_bpe = args.bpe or args.tokens.replace("_tokens.npy", "_bpe.json")
+        ruta_bpe = args.bpe or args.tokens.replace("_tokens.bin", "_bpe.json").replace("_tokens.npy", "_bpe.json")
         tokenizer = BPETokenizer.load(ruta_bpe)
-        data = torch.from_numpy(np.load(args.tokens).astype(np.int64))
+        crudo = (
+            np.fromfile(args.tokens, dtype=np.uint16)
+            if args.tokens.endswith(".bin")
+            else np.load(args.tokens)
+        )
+        # int32 y no int64: con miles de millones de tokens, la diferencia
+        # es de 6 GB de RAM contra 12 GB. Cada lote se convierte a int64
+        # (lo que exige la capa de embeddings) recien en get_batch, donde
+        # son unos pocos miles de numeros.
+        data = torch.from_numpy(crudo.astype(np.int32))
+        del crudo
         info_tokenizador = {"tipo": "bpe", "archivo": os.path.basename(ruta_bpe)}
         print(f"Tokens pre-codificados: {args.tokens} ({len(data):,} tokens)")
         print(f"Tokenizador BPE: {ruta_bpe} ({tokenizer.vocab_size:,} simbolos)")
