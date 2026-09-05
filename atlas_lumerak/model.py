@@ -84,6 +84,7 @@ class TransformerLanguageModel(nn.Module):
         n_layer: int = 4,
         block_size: int = 128,
         tie_weights: bool = False,
+        init_gpt2: bool = False,
     ):
         super().__init__()
         self.block_size = block_size
@@ -107,19 +108,24 @@ class TransformerLanguageModel(nn.Module):
             # en silencio, sin ningun error visible.
             self.lm_head.weight = self.token_embedding_table.weight
 
-        # Inicializacion al estilo GPT-2. Por defecto, PyTorch inicializa
-        # los embeddings con desviacion 1.0, ~50 veces mas grande que el
-        # resto de la red; eso desbalancea el flujo residual desde el
-        # primer paso y hace que el entrenamiento arranque mas lento.
-        self.apply(self._init_weights)
-
-        # Las capas que escriben de vuelta al flujo residual se inicializan
-        # mas chicas todavia, en proporcion a la profundidad: con 12 bloques
-        # sumando al mismo flujo, sin esto la senal se acumula y crece
-        # descontroladamente con la profundidad.
-        for nombre, p in self.named_parameters():
-            if nombre.endswith("proj.weight") or nombre.endswith("net.2.weight"):
-                nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layer))
+        # Inicializacion al estilo GPT-2, OPCIONAL y apagada por defecto.
+        #
+        # En teoria deberia ayudar: PyTorch inicializa los embeddings con
+        # desviacion 1.0, unas 50 veces mas grande que el resto de la red,
+        # lo que desbalancea el flujo residual desde el primer paso. Pero
+        # al medirlo en este proyecto (12 capas, 1200 pasos, midiendo
+        # perdida de validacion) dio consistentemente PEOR que la
+        # inicializacion por defecto de PyTorch. Ante la duda entre la
+        # teoria y la medicion propia, queda desactivada; se puede
+        # encender para volver a evaluarla a mayor escala.
+        if init_gpt2:
+            self.apply(self._init_weights)
+            # Las capas que escriben de vuelta al flujo residual arrancan
+            # mas chicas todavia, en proporcion a la profundidad: con 12
+            # bloques sumando al mismo flujo, sin esto la senal se acumula.
+            for nombre, p in self.named_parameters():
+                if nombre.endswith("proj.weight") or nombre.endswith("net.2.weight"):
+                    nn.init.normal_(p, mean=0.0, std=0.02 / math.sqrt(2 * n_layer))
 
     @staticmethod
     def _init_weights(modulo):

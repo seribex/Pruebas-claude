@@ -73,7 +73,9 @@ def main():
     parser.add_argument("--eval_interval", type=int, default=500)
     parser.add_argument("--save_interval", type=int, default=2000,
                         help="Cada cuantos pasos guardar el progreso (0 para desactivar).")
-    parser.add_argument("--weight_decay", type=float, default=0.1)
+    parser.add_argument("--weight_decay", type=float, default=0.01)
+    parser.add_argument("--init_gpt2", action="store_true",
+                        help="Inicializacion estilo GPT-2 (midio peor en las pruebas de este proyecto).")
     parser.add_argument("--tie_weights", action="store_true",
                         help="Compartir la tabla de entrada y la de salida (recomendado en modelos nuevos).")
     parser.add_argument(
@@ -173,6 +175,7 @@ def main():
             "n_layer": args.n_layer,
             "block_size": args.block_size,
             "tie_weights": args.tie_weights,
+            "init_gpt2": args.init_gpt2,
         }
 
     n = int(0.9 * len(data))
