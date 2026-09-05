@@ -32,6 +32,8 @@ def main():
     parser.add_argument("--vocab", default="atlas_lumerak/checkpoints/vocab.json")
     parser.add_argument("--response_length", type=int, default=200)
     parser.add_argument("--log", default="atlas_lumerak/data/chat_log.jsonl")
+    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--top_k", type=int, default=40, help="0 para desactivar")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -69,7 +71,12 @@ def main():
         idx = torch.tensor([tokenizer.encode("".join(known_chars))], dtype=torch.long, device=device)
 
         with torch.no_grad():
-            out = model.generate(idx, max_new_tokens=args.response_length)[0].tolist()
+            out = model.generate(
+                idx,
+                max_new_tokens=args.response_length,
+                temperature=args.temperature,
+                top_k=args.top_k if args.top_k > 0 else None,
+            )[0].tolist()
 
         crudo = tokenizer.decode(out[idx.shape[1]:])
         # El modelo no tiene una señal explicita de "aqui termino mi

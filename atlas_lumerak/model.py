@@ -112,12 +112,26 @@ class TransformerLanguageModel(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens: int):
+    def generate(self, idx, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None):
+        """
+        temperature: que tan "arriesgado" es al elegir. Menor a 1 hace que
+            prefiera lo mas probable (mas coherente, menos creativo); mayor
+            a 1 lo hace mas impredecible. 1.0 = sin cambios.
+        top_k: si se indica, solo considera los k caracteres mas probables
+            y descarta el resto. Evita que de vez en cuando elija una letra
+            absurda de la "cola larga" y descarrile la frase entera.
+        """
         self.eval()
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size:]
             logits, _ = self(idx_cond)
-            logits = logits[:, -1, :]
+            logits = logits[:, -1, :] / max(temperature, 1e-6)
+
+            if top_k is not None:
+                k = min(top_k, logits.shape[-1])
+                umbral = torch.topk(logits, k, dim=-1).values[:, -1:]
+                logits = logits.masked_fill(logits < umbral, float("-inf"))
+
             probs = F.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)
             idx = torch.cat([idx, next_id], dim=1)

@@ -17,6 +17,8 @@ def main():
     parser.add_argument("--vocab", default="atlas_lumerak/checkpoints/vocab.json")
     parser.add_argument("--prompt", default="")
     parser.add_argument("--length", type=int, default=500)
+    parser.add_argument("--temperature", type=float, default=0.8)
+    parser.add_argument("--top_k", type=int, default=40, help="0 para desactivar")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -34,7 +36,12 @@ def main():
         start_ids = [0]
 
     idx = torch.tensor([start_ids], dtype=torch.long, device=device)
-    output = model.generate(idx, max_new_tokens=args.length)[0].tolist()
+    output = model.generate(
+        idx,
+        max_new_tokens=args.length,
+        temperature=args.temperature,
+        top_k=args.top_k if args.top_k > 0 else None,
+    )[0].tolist()
     print(tokenizer.decode(output))
 
 
