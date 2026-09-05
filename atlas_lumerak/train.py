@@ -46,7 +46,12 @@ def estimate_loss(model, train_data, val_data, block_size, batch_size, device, e
 
 def main():
     parser = argparse.ArgumentParser(description="Entrena a Atlas Lumerak sobre un corpus de texto.")
-    parser.add_argument("--data", default="atlas_lumerak/data/quijote.txt")
+    parser.add_argument(
+        "--data",
+        nargs="+",
+        default=["atlas_lumerak/data/quijote.txt", "atlas_lumerak/data/wikipedia_es.txt"],
+        help="Uno o mas archivos de texto; se concatenan en un solo corpus de entrenamiento.",
+    )
     parser.add_argument("--out_dir", default="atlas_lumerak/checkpoints")
     parser.add_argument("--n_embd", type=int, default=128)
     parser.add_argument("--n_head", type=int, default=4)
@@ -65,8 +70,11 @@ def main():
 
     torch.manual_seed(42)
 
-    with open(args.data, encoding="utf-8") as f:
-        text = f.read()
+    text = ""
+    for path in args.data:
+        with open(path, encoding="utf-8") as f:
+            text += f.read() + "\n\n"
+    print(f"Archivos combinados: {', '.join(args.data)}")
 
     tokenizer = CharTokenizer(text)
     data = torch.tensor(tokenizer.encode(text), dtype=torch.long)
