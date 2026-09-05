@@ -65,7 +65,7 @@ def main():
     parser.add_argument("--block_size", type=int, default=128)
     parser.add_argument("--batch_size", type=int, default=64)
     parser.add_argument("--steps", type=int, default=5000)
-    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--eval_interval", type=int, default=500)
     parser.add_argument(
         "--resume_from",
@@ -133,6 +133,16 @@ def main():
 
     print(f"Corpus: {len(text):,} caracteres | vocabulario: {tokenizer.vocab_size} simbolos")
     print(f"Entrenamiento: {len(train_data):,} caracteres | validacion: {len(val_data):,} caracteres")
+
+    # La tasa de aprendizaje correcta depende de si el modelo es nuevo o si
+    # ya esta entrenado. Continuar entrenando con la misma tasa "alta" que
+    # se usa para empezar de cero puede sacudir demasiado los pesos ya
+    # aprendidos (lo vimos en la practica: la calidad del chat empeoro
+    # tras continuar con la tasa por defecto). Practica estandar de
+    # "fine-tuning": 5-10 veces mas baja que el entrenamiento original.
+    if args.lr is None:
+        args.lr = 3e-5 if resume_ckpt is not None else 3e-4
+        print(f"Tasa de aprendizaje automatica: {args.lr} ({'continuando' if resume_ckpt is not None else 'desde cero'})")
 
     # A partir de aca, el tamano de contexto SIEMPRE es el de model_config
     # (fijo por la arquitectura), nunca el de --block_size en la linea de
@@ -219,6 +229,17 @@ def main():
             )
 
     checkpoint_path = os.path.join(args.out_dir, "atlas_lumerak.pt")
+
+    # Nunca sobrescribir en silencio un checkpoint anterior: si ya existe
+    # uno (por ejemplo, el que se esta usando como base con --resume_from),
+    # se respalda con la fecha y hora antes de guardar el nuevo. Asi, si
+    # esta corrida resulta peor (como paso una vez), el anterior no se
+    # pierde.
+    if os.path.exists(checkpoint_path):
+        backup_path = checkpoint_path.replace(".pt", f"_backup_{time.strftime('%Y%m%d_%H%M%S')}.pt")
+        os.replace(checkpoint_path, backup_path)
+        print(f"Checkpoint anterior respaldado en: {backup_path}")
+
     torch.save(
         {"model_state_dict": model.state_dict(), "config": model_config},
         checkpoint_path,
