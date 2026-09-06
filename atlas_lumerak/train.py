@@ -84,6 +84,13 @@ def main():
         help="Ruta a un checkpoint existente para seguir entrenando en vez de empezar de cero.",
     )
     parser.add_argument(
+        "--continuar",
+        action="store_true",
+        help="Retomar una corrida INTERRUMPIDA (corte de luz, Ctrl+C) exactamente donde quedo: "
+             "mismo paso, misma tasa de aprendizaje y estado del optimizador. Sin esta bandera, "
+             "--resume_from se comporta como fine-tuning (arranca de cero con tasa mas baja).",
+    )
+    parser.add_argument(
         "--resume_vocab",
         default=None,
         help="Vocabulario del checkpoint a continuar (por defecto: vocab.json junto al checkpoint).",
@@ -189,9 +196,22 @@ def main():
     # aprendidos (lo vimos en la practica: la calidad del chat empeoro
     # tras continuar con la tasa por defecto). Practica estandar de
     # "fine-tuning": 5-10 veces mas baja que el entrenamiento original.
+    entrenamiento_previo = (resume_ckpt or {}).get("entrenamiento") if args.continuar else None
+
     if args.lr is None:
-        args.lr = 3e-5 if resume_ckpt is not None else 3e-4
-        print(f"Tasa de aprendizaje automatica: {args.lr} ({'continuando' if resume_ckpt is not None else 'desde cero'})")
+        if entrenamiento_previo:
+            # Retomar una corrida cortada: se conserva la tasa original, no
+            # la baja de fine-tuning -- si no, el modelo casi dejaria de
+            # avanzar a mitad de su propio pre-entrenamiento.
+            args.lr = entrenamiento_previo["lr"]
+            modo = "retomando corrida interrumpida"
+        elif resume_ckpt is not None:
+            args.lr = 3e-5
+            modo = "fine-tuning sobre un modelo ya entrenado"
+        else:
+            args.lr = 3e-4
+            modo = "desde cero"
+        print(f"Tasa de aprendizaje automatica: {args.lr} ({modo})")
 
     # A partir de aca, el tamano de contexto SIEMPRE es el de model_config
     # (fijo por la arquitectura), nunca el de --block_size en la linea de
@@ -263,6 +283,21 @@ def main():
 
     scheduler = torch.optim.lr_scheduler.LambdaLR(optimizer, lr_lambda)
 
+    paso_inicial = 0
+    if entrenamiento_previo:
+        paso_inicial = entrenamiento_previo["paso"] + 1
+        args.steps = entrenamiento_previo["steps_totales"]
+        warmup_steps = max(1, int(0.03 * args.steps))
+        # Se adelanta la curva de tasa de aprendizaje hasta el punto donde
+        # se corto, para que continue su descenso en vez de reiniciarlo.
+        for _ in range(paso_inicial):
+            scheduler.step()
+        if "optimizer_state_dict" in resume_ckpt:
+            optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+            print("Estado del optimizador restaurado (Adam continua con su historial).")
+        print(f"Retomando en el paso {paso_inicial:,} de {args.steps:,} "
+              f"({paso_inicial/args.steps*100:.1f}% ya hecho)")
+
     os.makedirs(args.out_dir, exist_ok=True)
     # Se guarda el tokenizador junto al modelo: sin el, los pesos son
     # inutiles (no habria forma de traducir texto a numeros y de vuelta).
@@ -270,12 +305,17 @@ def main():
 
     checkpoint_path = os.path.join(args.out_dir, "atlas_lumerak.pt")
 
-    def guardar(ruta: str) -> None:
+    def guardar(ruta: str, paso: int | None = None) -> None:
         estado = {
             "model_state_dict": model.state_dict(),
             "config": model_config,
             "tokenizador": info_tokenizador,
         }
+        if paso is not None:
+            # Guardado parcial: incluye todo lo necesario para retomar la
+            # corrida exactamente donde quedo si se interrumpe.
+            estado["entrenamiento"] = {"paso": paso, "steps_totales": args.steps, "lr": args.lr}
+            estado["optimizer_state_dict"] = optimizer.state_dict()
         # Se escribe primero a un archivo temporal y recien despues se
         # renombra: si el proceso muere a mitad de la escritura, el
         # checkpoint anterior queda intacto en vez de quedar corrupto.
@@ -283,7 +323,7 @@ def main():
         os.replace(ruta + ".tmp", ruta)
 
     start_time = time.time()
-    for step in range(args.steps):
+    for step in range(paso_inicial, args.steps):
         xb, yb = get_batch(train_data, block_size, args.batch_size, device)
         with autocast_ctx:
             _, loss = model(xb, yb)
@@ -310,7 +350,7 @@ def main():
         # Guardado intermedio: en una corrida de muchas horas, perder todo
         # por un corte de luz o un error a ultimo momento no es aceptable.
         if args.save_interval > 0 and step > 0 and step % args.save_interval == 0:
-            guardar(os.path.join(args.out_dir, "atlas_lumerak_parcial.pt"))
+            guardar(os.path.join(args.out_dir, "atlas_lumerak_parcial.pt"), paso=step)
             print(f"    (progreso guardado en el paso {step:,})", flush=True)
 
     # Nunca sobrescribir en silencio un checkpoint anterior: si ya existe
