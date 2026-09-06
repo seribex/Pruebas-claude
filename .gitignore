@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+atlas_lumerak/checkpoints/
+atlas_lumerak/data/chat_log.jsonl
+atlas_lumerak/data/wikipedia_es_completa.txt
+atlas_lumerak/data/_tmp_wikipedia/
