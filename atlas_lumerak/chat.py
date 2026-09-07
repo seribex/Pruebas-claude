@@ -53,7 +53,9 @@ def main():
     print("=== Atlas Lumerak ===")
     print(f"(memoria de hasta {block_size} tokens -- escribe 'salir' para terminar)\n")
 
-    contexto = ""
+    # Cada elemento es un turno completo ("Usuario: ...\nAtlas: ...\n\n"),
+    # para poder descartarlos enteros cuando ya no quepan.
+    turnos: list[str] = []
     while True:
         try:
             entrada = input("Tu: ")
@@ -65,11 +67,19 @@ def main():
             print("Hasta luego.")
             break
 
-        contexto += f"Usuario: {entrada}\nAtlas:"
+        turnos.append(f"Usuario: {entrada}\nAtlas:")
 
-        # Se codifica todo el contexto y se recortan los ultimos
-        # block_size tokens: es lo que el modelo alcanza a "ver".
-        ids = tokenizer.encode(contexto)[-block_size:]
+        # El modelo solo alcanza a ver block_size tokens. Se descartan los
+        # turnos MAS VIEJOS enteros hasta que quepa, en vez de cortar por
+        # el token numero 512: un corte a ciegas puede dejar media palabra
+        # o media pregunta al principio, y el modelo empieza a leer basura.
+        while True:
+            contexto = "".join(turnos)
+            ids = tokenizer.encode(contexto)
+            if len(ids) <= block_size or len(turnos) == 1:
+                break
+            turnos.pop(0)
+        ids = ids[-block_size:]
         idx = torch.tensor([ids], dtype=torch.long, device=device)
 
         salida = model.generate(
@@ -85,7 +95,7 @@ def main():
         respuesta = recortar_respuesta(crudo, parar_en_blanco=not args.sin_recorte)
         print(f"Atlas: {respuesta}\n")
 
-        contexto += f" {respuesta}\n\n"
+        turnos[-1] += f" {respuesta}\n\n"
 
         util = input("¿Fue util esta respuesta? (s/n, Enter para omitir): ").strip().lower()
         with open(args.log, "a", encoding="utf-8") as f:

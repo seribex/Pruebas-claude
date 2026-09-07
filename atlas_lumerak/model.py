@@ -186,22 +186,33 @@ class TransformerLanguageModel(nn.Module):
             Un top_k fijo de 40 mantiene 40 candidatos incluso cuando el
             modelo ya sabia la respuesta -- de ahi salen los descarrilamientos
             de una sola palabra.
-        repetition_penalty: mayor a 1.0 castiga los tokens que ya aparecieron
-            hace poco. Es el freno directo a los bucles ("construir un nuevo
-            edificio, construir un nuevo edificio..."), un defecto tipico de
-            los modelos chicos. 1.0 = desactivado.
-        penalty_window: cuantos tokens hacia atras mira ese castigo. Mirar
-            todo el contexto haria imposible repetir palabras normales como
+        repetition_penalty: mayor a 1.0 castiga los tokens que el modelo ya
+            escribio EN ESTA RESPUESTA. Es el freno directo a los bucles
+            ("construir un nuevo edificio, construir un nuevo edificio..."),
+            un defecto tipico de los modelos chicos. 1.0 = desactivado.
+
+            Ojo con el detalle de "en esta respuesta": el castigo NO puede
+            alcanzar al texto de entrada. En un chat, la entrada es toda la
+            conversacion previa, asi que castigarla equivale a prohibirle
+            justo el vocabulario que acaba de usar -- "Hola", "puedo",
+            "ayudarte" -- antes de escribir una sola palabra. Medido: con
+            esa version, Atlas contestaba bien el primer turno y a partir
+            del segundo respondia en ingles roto, empujado fuera del espanol.
+        penalty_window: cuantos tokens de la respuesta actual mira el castigo.
+            Mirarla entera haria imposible repetir palabras normales como
             "de" o "que"; una ventana corta solo corta los bucles.
         """
         self.eval()
+        # Donde empieza lo que genera el modelo. Todo lo anterior es la
+        # entrada del usuario y queda fuera del alcance del castigo.
+        inicio = idx.shape[1]
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size:]
             logits, _ = self(idx_cond)
             logits = logits[:, -1, :]
 
-            if repetition_penalty != 1.0:
-                recientes = idx[:, -penalty_window:]
+            if repetition_penalty != 1.0 and idx.shape[1] > inicio:
+                recientes = idx[:, max(inicio, idx.shape[1] - penalty_window):]
                 puntajes = torch.gather(logits, 1, recientes)
                 # Dividir un logit positivo lo acerca a cero; a uno negativo
                 # hay que multiplicarlo para alejarlo. De lo contrario el
