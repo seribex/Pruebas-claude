@@ -30,7 +30,12 @@ def main():
     parser.add_argument("--vocab", default=None)
     parser.add_argument("--lotes", type=int, default=200, help="Cuantos lotes promediar.")
     parser.add_argument("--batch_size", type=int, default=16)
-    parser.add_argument("--prompt", default="")
+    # Un texto de arranque de verdad. Antes, sin --prompt, empezaba a generar
+    # desde el token 0, que es un TABULADOR: en Wikipedia los tabuladores
+    # viven dentro de tablas, asi que el modelo respondia con paginas de
+    # espacios en blanco -- y parecia roto cuando en realidad estaba
+    # acertando. La pregunta estaba mal hecha, no la respuesta.
+    parser.add_argument("--prompt", default="La historia de")
     parser.add_argument("--muestra", type=int, default=300)
     args = parser.parse_args()
 
@@ -68,10 +73,11 @@ def main():
     print(f"Referencia: un modelo sin entrenar daria {math.log(config['vocab_size']):.2f} "
           f"de perdida y {config['vocab_size']:,} de perplejidad\n")
 
-    ids = tokenizer.encode(args.prompt) if args.prompt else [0]
+    ids = tokenizer.encode(args.prompt) if args.prompt else [1]
     idx = torch.tensor([ids], dtype=torch.long, device=device)
-    salida = model.generate(idx, max_new_tokens=args.muestra, temperature=0.8, top_k=40)[0].tolist()
-    print("--- Muestra generada ---")
+    salida = model.generate(idx, max_new_tokens=args.muestra, temperature=0.8,
+                            top_k=40, top_p=0.95, repetition_penalty=1.1)[0].tolist()
+    print(f"--- Muestra generada (a partir de {args.prompt!r}) ---")
     print(tokenizer.decode(salida))
 
 
