@@ -227,7 +227,10 @@ def codificar(conv: Conversacion, tok: BPETokenizer, largo_max: int):
             ids += ip + ir
             mascara += [0] * len(ip) + [1] * len(ir)
         if len(ids) <= largo_max:
-            return ids, mascara
+            # Se devuelven como arrays de numpy y no como listas de Python:
+            # con un millon de conversaciones la diferencia es de unos 3 GB
+            # de memoria a unos 600 MB.
+            return np.array(ids, dtype=np.uint16), np.array(mascara, dtype=np.uint8)
         if len(turnos) == 1:
             return None  # un solo intercambio y aun asi no entra
         turnos = turnos[1:]  # descartar el turno mas viejo y reintentar
@@ -243,24 +246,23 @@ def empaquetar(ejemplos, ventana: int):
     rellena el hueco con ceros marcados como "no cuenta" y se abre una
     ventana nueva. Asi toda ventana arranca en un "Usuario:" completo.
     """
-    ventanas_ids, ventanas_mask = [], []
-    buf_ids: list[int] = []
-    buf_mask: list[int] = []
+    # Cada ventana lleva al menos un ejemplo, asi que nunca puede haber mas
+    # ventanas que ejemplos: se reserva ese maximo de una vez y al final se
+    # recorta. Reservar (en vez de ir agregando listas) es lo que hace que
+    # esto funcione con un millon de conversaciones sin agotar la memoria.
+    v_ids = np.zeros((len(ejemplos), ventana), dtype=np.uint16)
+    v_mask = np.zeros((len(ejemplos), ventana), dtype=np.uint8)
 
-    def cerrar():
-        falta = ventana - len(buf_ids)
-        ventanas_ids.append(buf_ids + [0] * falta)
-        ventanas_mask.append(buf_mask + [0] * falta)
-
+    fila, usado = 0, 0
     for ids, mascara in ejemplos:
-        if buf_ids and len(buf_ids) + len(ids) > ventana:
-            cerrar()
-            buf_ids, buf_mask = [], []
-        buf_ids += ids
-        buf_mask += mascara
-    if buf_ids:
-        cerrar()
-    return ventanas_ids, ventanas_mask
+        if usado and usado + len(ids) > ventana:
+            fila += 1          # el resto de la fila queda en cero: relleno
+            usado = 0          # con mascara cero, o sea que no cuenta
+        v_ids[fila, usado:usado + len(ids)] = ids
+        v_mask[fila, usado:usado + len(ids)] = mascara
+        usado += len(ids)
+    n = fila + 1 if usado else fila
+    return v_ids[:n], v_mask[:n]
 
 
 # ---------------------------------------------------------------------
@@ -319,8 +321,8 @@ def main():
     v_ids, v_mask = empaquetar(ejemplos, ventana)
     print(f"Ventanas de {ventana} tokens: {len(v_ids):,}")
 
-    arr_ids = np.array(v_ids, dtype=np.uint16).reshape(-1)
-    arr_mask = np.array(v_mask, dtype=np.uint8).reshape(-1)
+    arr_ids = v_ids.reshape(-1)
+    arr_mask = v_mask.reshape(-1)
     supervisados = int(arr_mask.sum())
     print(f"Tokens totales: {len(arr_ids):,} | supervisados (cuentan para el error): "
           f"{supervisados:,} ({supervisados / len(arr_ids) * 100:.1f}%)")

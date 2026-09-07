@@ -105,8 +105,11 @@ def main():
     p.add_argument("--bpe", required=True)
     p.add_argument("--tokens_pre", default=None,
                    help="Corpus de pre-entrenamiento para mezclar (evita el olvido).")
-    p.add_argument("--mezcla_pre", type=float, default=0.2,
-                   help="Fraccion de lotes que vienen del corpus original. 0 para desactivar.")
+    p.add_argument("--mezcla_pre", type=float, default=0.1,
+                   help="Fraccion de lotes que vienen del corpus original. 0 para desactivar. "
+                        "Es un equilibrio: sirve para que no olvide lo que sabe, pero el prior "
+                        "de Wikipedia es justamente lo que queremos vencer, asi que con un "
+                        "corpus de instrucciones grande conviene poco, no mucho.")
     p.add_argument("--out_dir", default="atlas_lumerak/checkpoints_chat")
     p.add_argument("--batch_size", type=int, default=24)
     p.add_argument("--steps", type=int, default=4000)
