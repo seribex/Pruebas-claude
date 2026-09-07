@@ -44,6 +44,8 @@ def recortar_respuesta(texto: str, parar_en_blanco: bool = True) -> str:
     # 24% al 4% por culpa de este recorte, no por culpa del modelo.
     salida = [bloques[0]]
     for b in bloques[1:]:
+        if not b.strip():
+            continue          # varias lineas en blanco seguidas: no rompe la lista
         if not ELEMENTO_DE_LISTA.match(b):
             break
         salida.append(b)

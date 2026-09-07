@@ -183,6 +183,7 @@ def main():
     # este examen exista.
     ok_listas = ok_listas_crudo = total_listas = 0
     detalle_listas = []
+    ejemplo_lista_crudo = ""
     for pregunta, esperados in LISTAS:
         for k in range(args.muestras):
             r, crudo = pedir(pregunta, k); todas.append(r)
@@ -191,6 +192,8 @@ def main():
             ok_listas += n_rec == esperados
             ok_listas_crudo += n_crudo == esperados
             detalle_listas.append({"pedidos": esperados, "dados": n_crudo})
+            if n_crudo > n_rec and not ejemplo_lista_crudo:
+                ejemplo_lista_crudo = crudo   # un caso donde el recorte perdio elementos
         muestrario.append((pregunta, r))
 
     # --- relevancia ---
@@ -232,8 +235,13 @@ def main():
         "identidad_creador": aciertos_creador / total_creador * 100,
         "espanol": espanol,
         "espanol_evaluables": len(decidibles),
-        "obediencia_listas": ok_listas / total_listas * 100,
-        "obediencia_listas_sin_recorte": ok_listas_crudo / total_listas * 100,
+        # La nota oficial se toma sobre la respuesta ENTERA, no sobre la
+        # recortada. El examen mide a Atlas; el recorte es una decision de
+        # presentacion del chat y no debe contaminar la medida del modelo.
+        # Se conserva la otra cifra aparte, porque es lo que de verdad ve
+        # el usuario y su diferencia mide la calidad del recorte.
+        "obediencia_listas": ok_listas_crudo / total_listas * 100,
+        "obediencia_listas_tras_recorte": ok_listas / total_listas * 100,
         "detalle_listas": detalle_listas,
         "relevancia": ok_rel / total_rel * 100,
         "repeticion": repes,
@@ -262,8 +270,8 @@ def main():
         print(f"  {nombre:26s} {valor:5.1f}%  {barra:<25s} {sentido}")
     # Diagnostico de las listas: cuantos elementos pidio y cuantos dio.
     from collections import Counter
-    print(f"\n  Listas: {res['obediencia_listas']:.0f}% acierta tras recortar, "
-          f"{res['obediencia_listas_sin_recorte']:.0f}% sobre la respuesta entera")
+    print(f"\n  Listas: {res['obediencia_listas']:.0f}% acierta (lo que genera Atlas); "
+          f"{res['obediencia_listas_tras_recorte']:.0f}% sobrevive al recorte del chat")
     reparto = Counter((d["pedidos"], d["dados"]) for d in detalle_listas)
     for (ped, dad), n in sorted(reparto.items()):
         marca = " <-- correcto" if ped == dad else ""
@@ -276,6 +284,10 @@ def main():
     with open(args.historial, "a", encoding="utf-8") as f:
         f.write(json.dumps(res, ensure_ascii=False) + "\n")
     print(f"\n  Guardado en {args.historial} (una linea por examen, para ver la curva)")
+
+    if ejemplo_lista_crudo:
+        print("\n--- una respuesta de lista, tal cual la escribe Atlas ---")
+        print("   ", repr(ejemplo_lista_crudo[:400]))
 
     if args.ejemplos:
         print("\n--- algunas respuestas, para mirarlas con los ojos ---")
