@@ -125,7 +125,8 @@ def responder(model, tok, block_size, device, pregunta, args, semilla):
         top_p=args.top_p if args.top_p < 1.0 else None,
         repetition_penalty=args.repeticion,
     )[0].tolist()
-    return recortar_respuesta(tok.decode(salida[len(ids):]))
+    crudo = tok.decode(salida[len(ids):])
+    return recortar_respuesta(crudo), crudo
 
 
 def main():
@@ -157,13 +158,14 @@ def main():
     todas, muestrario = [], []
 
     def pedir(pregunta, k):
+        """Devuelve (respuesta recortada, respuesta sin recortar)."""
         return responder(model, tok, bs, device, pregunta, args, 1000 + k * 7)
 
     # --- identidad ---
     aciertos_nombre = total_nombre = aciertos_creador = total_creador = 0
     for pregunta, tipo in IDENTIDAD:
         for k in range(args.muestras):
-            r = pedir(pregunta, k); todas.append(r)
+            r, _ = pedir(pregunta, k); todas.append(r)
             plano = sin_tildes(r)
             if tipo == "nombre":
                 total_nombre += 1
@@ -174,19 +176,28 @@ def main():
         muestrario.append((pregunta, r))
 
     # --- obediencia de listas ---
-    ok_listas = total_listas = 0
+    # Se cuenta sobre la respuesta recortada Y sobre la entera. Si las dos
+    # cifras difieren mucho, el fallo no es de Atlas contando: es del
+    # recorte, que corta la lista en la primera linea en blanco. Distinguir
+    # "no sabe contar" de "lo mide mal mi codigo" es justo el motivo de que
+    # este examen exista.
+    ok_listas = ok_listas_crudo = total_listas = 0
+    detalle_listas = []
     for pregunta, esperados in LISTAS:
         for k in range(args.muestras):
-            r = pedir(pregunta, k); todas.append(r)
+            r, crudo = pedir(pregunta, k); todas.append(r)
+            n_rec, n_crudo = contar_elementos(r), contar_elementos(crudo)
             total_listas += 1
-            ok_listas += contar_elementos(r) == esperados
+            ok_listas += n_rec == esperados
+            ok_listas_crudo += n_crudo == esperados
+            detalle_listas.append({"pedidos": esperados, "dados": n_crudo})
         muestrario.append((pregunta, r))
 
     # --- relevancia ---
     ok_rel = total_rel = 0
     for pregunta, claves in RELEVANCIA:
         for k in range(args.muestras):
-            r = pedir(pregunta, k); todas.append(r)
+            r, _ = pedir(pregunta, k); todas.append(r)
             total_rel += 1
             ok_rel += any(c in sin_tildes(r) for c in map(sin_tildes, claves))
         muestrario.append((pregunta, r))
@@ -194,7 +205,7 @@ def main():
     # --- conversacion (solo alimenta las metricas globales) ---
     for pregunta in CONVERSACION:
         for k in range(args.muestras):
-            r = pedir(pregunta, k); todas.append(r)
+            r, _ = pedir(pregunta, k); todas.append(r)
         muestrario.append((pregunta, r))
 
     # --- metricas sobre TODAS las respuestas ---
@@ -222,6 +233,8 @@ def main():
         "espanol": espanol,
         "espanol_evaluables": len(decidibles),
         "obediencia_listas": ok_listas / total_listas * 100,
+        "obediencia_listas_sin_recorte": ok_listas_crudo / total_listas * 100,
+        "detalle_listas": detalle_listas,
         "relevancia": ok_rel / total_rel * 100,
         "repeticion": repes,
         "parada_limpia": limpias,
@@ -247,6 +260,15 @@ def main():
     for nombre, valor, sentido in filas:
         barra = "#" * round(valor / 4)
         print(f"  {nombre:26s} {valor:5.1f}%  {barra:<25s} {sentido}")
+    # Diagnostico de las listas: cuantos elementos pidio y cuantos dio.
+    from collections import Counter
+    print(f"\n  Listas: {res['obediencia_listas']:.0f}% acierta tras recortar, "
+          f"{res['obediencia_listas_sin_recorte']:.0f}% sobre la respuesta entera")
+    reparto = Counter((d["pedidos"], d["dados"]) for d in detalle_listas)
+    for (ped, dad), n in sorted(reparto.items()):
+        marca = " <-- correcto" if ped == dad else ""
+        print(f"    pidio {ped}, dio {dad:2d}  ({n} veces){marca}")
+
     print(f"\n  Longitud media: {largo:.0f} palabras por respuesta")
     print(f"  {len(todas)} respuestas en {time.time()-t0:.0f}s")
 
