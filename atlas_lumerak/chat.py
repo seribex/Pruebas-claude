@@ -28,8 +28,18 @@ def main():
                         help="Tokenizador (por defecto: el que indique el checkpoint, en su misma carpeta).")
     parser.add_argument("--response_length", type=int, default=200)
     parser.add_argument("--log", default="atlas_lumerak/data/chat_log.jsonl")
-    parser.add_argument("--temperature", type=float, default=0.8)
+    # Valores mas "frios" que los de generate.py a proposito. Conversando,
+    # un solo token desafortunado descarrila la respuesta entera (medido:
+    # "ideas para estudiar mejor" -> "ideas para construir un edificio"), y
+    # en un modelo de este tamano eso pasa seguido. Al escribir texto libre
+    # esa variedad se agradece; al responder una pregunta, estorba.
+    parser.add_argument("--temperature", type=float, default=0.7)
     parser.add_argument("--top_k", type=int, default=40, help="0 para desactivar")
+    parser.add_argument("--top_p", type=float, default=0.9,
+                        help="Se queda con los pocos candidatos que junten esta probabilidad. "
+                             "1.0 para desactivar.")
+    parser.add_argument("--repeticion", type=float, default=1.15,
+                        help="Mayor a 1.0 castiga lo que acaba de decir, para frenar bucles.")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -63,6 +73,8 @@ def main():
             max_new_tokens=args.response_length,
             temperature=args.temperature,
             top_k=args.top_k if args.top_k > 0 else None,
+            top_p=args.top_p if args.top_p < 1.0 else None,
+            repetition_penalty=args.repeticion,
         )[0].tolist()
 
         crudo = tokenizer.decode(salida[len(ids):])

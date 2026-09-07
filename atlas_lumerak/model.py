@@ -149,30 +149,84 @@ class TransformerLanguageModel(nn.Module):
             loss = None
         else:
             b, t, c = logits.shape
-            loss = F.cross_entropy(logits.view(b * t, c), targets.view(b * t))
+            # ignore_index=-100: las posiciones marcadas con -100 en
+            # `targets` no aportan nada a la perdida ni al gradiente. Es lo
+            # que permite el "enmascarado del prompt" en el fine-tuning
+            # conversacional: solo se aprende a predecir lo que dice Atlas,
+            # no a inventar la pregunta del usuario. En el pre-entrenamiento
+            # ningun objetivo vale -100, asi que no cambia nada alli.
+            loss = F.cross_entropy(
+                logits.view(b * t, c), targets.view(b * t), ignore_index=-100
+            )
 
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens: int, temperature: float = 1.0, top_k: int | None = None):
+    def generate(
+        self,
+        idx,
+        max_new_tokens: int,
+        temperature: float = 1.0,
+        top_k: int | None = None,
+        top_p: float | None = None,
+        repetition_penalty: float = 1.0,
+        penalty_window: int = 128,
+    ):
         """
         temperature: que tan "arriesgado" es al elegir. Menor a 1 hace que
             prefiera lo mas probable (mas coherente, menos creativo); mayor
             a 1 lo hace mas impredecible. 1.0 = sin cambios.
-        top_k: si se indica, solo considera los k caracteres mas probables
-            y descarta el resto. Evita que de vez en cuando elija una letra
-            absurda de la "cola larga" y descarrile la frase entera.
+        top_k: si se indica, solo considera los k tokens mas probables y
+            descarta el resto. Evita que de vez en cuando elija algo absurdo
+            de la "cola larga" y descarrile la frase entera.
+        top_p: filtro alternativo (o adicional) al top_k, mas inteligente:
+            en vez de un numero fijo de candidatos, se queda con los pocos
+            que hagan falta para juntar p de probabilidad. Cuando el modelo
+            esta seguro deja 2 o 3 opciones; cuando duda de verdad deja mas.
+            Un top_k fijo de 40 mantiene 40 candidatos incluso cuando el
+            modelo ya sabia la respuesta -- de ahi salen los descarrilamientos
+            de una sola palabra.
+        repetition_penalty: mayor a 1.0 castiga los tokens que ya aparecieron
+            hace poco. Es el freno directo a los bucles ("construir un nuevo
+            edificio, construir un nuevo edificio..."), un defecto tipico de
+            los modelos chicos. 1.0 = desactivado.
+        penalty_window: cuantos tokens hacia atras mira ese castigo. Mirar
+            todo el contexto haria imposible repetir palabras normales como
+            "de" o "que"; una ventana corta solo corta los bucles.
         """
         self.eval()
         for _ in range(max_new_tokens):
             idx_cond = idx[:, -self.block_size:]
             logits, _ = self(idx_cond)
-            logits = logits[:, -1, :] / max(temperature, 1e-6)
+            logits = logits[:, -1, :]
+
+            if repetition_penalty != 1.0:
+                recientes = idx[:, -penalty_window:]
+                puntajes = torch.gather(logits, 1, recientes)
+                # Dividir un logit positivo lo acerca a cero; a uno negativo
+                # hay que multiplicarlo para alejarlo. De lo contrario el
+                # castigo premiaria a los tokens ya improbables.
+                puntajes = torch.where(
+                    puntajes < 0, puntajes * repetition_penalty, puntajes / repetition_penalty
+                )
+                logits = logits.scatter(1, recientes, puntajes)
+
+            logits = logits / max(temperature, 1e-6)
 
             if top_k is not None:
                 k = min(top_k, logits.shape[-1])
                 umbral = torch.topk(logits, k, dim=-1).values[:, -1:]
                 logits = logits.masked_fill(logits < umbral, float("-inf"))
+
+            if top_p is not None and top_p < 1.0:
+                ordenados, indices = torch.sort(logits, descending=True, dim=-1)
+                probs_ord = F.softmax(ordenados, dim=-1)
+                # Se descarta la cola que sobra, pero nunca el primero: se
+                # compara contra la suma ANTERIOR a cada token, asi el mas
+                # probable siempre sobrevive aunque el solo ya supere p.
+                sobra = (torch.cumsum(probs_ord, dim=-1) - probs_ord) >= top_p
+                a_descartar = sobra.scatter(1, indices, sobra)
+                logits = logits.masked_fill(a_descartar, float("-inf"))
 
             probs = F.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)

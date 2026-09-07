@@ -19,6 +19,11 @@ def main():
     parser.add_argument("--length", type=int, default=500)
     parser.add_argument("--temperature", type=float, default=0.8)
     parser.add_argument("--top_k", type=int, default=40, help="0 para desactivar")
+    parser.add_argument("--top_p", type=float, default=0.95,
+                        help="Se queda con los pocos candidatos que junten esta probabilidad. "
+                             "1.0 para desactivar.")
+    parser.add_argument("--repeticion", type=float, default=1.1,
+                        help="Mayor a 1.0 castiga lo que acaba de decir, para frenar bucles.")
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -32,6 +37,8 @@ def main():
         max_new_tokens=args.length,
         temperature=args.temperature,
         top_k=args.top_k if args.top_k > 0 else None,
+        top_p=args.top_p if args.top_p < 1.0 else None,
+        repetition_penalty=args.repeticion,
     )[0].tolist()
     print(tokenizer.decode(output))
 
