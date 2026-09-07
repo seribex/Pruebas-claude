@@ -37,7 +37,7 @@ import pandas as pd
 
 import identidad
 from bpe_tokenizer import BPETokenizer, FIN_TURNO
-from text_cleaning import limpiar_texto
+from text_cleaning import es_espanol, limpiar_texto
 
 HF = "https://huggingface.co/datasets"
 URLS = {
@@ -290,6 +290,8 @@ def main():
                              "importantes; repetirlos es la forma de que no se pierdan entre "
                              "cientos de miles de ejemplos ajenos.")
     parser.add_argument("--max_openhermes", type=int, default=200_000)
+    parser.add_argument("--sin_filtro_idioma", action="store_true",
+                        help="No descartar las conversaciones cuya respuesta no este en espanol.")
     parser.add_argument("--semilla", type=int, default=42)
     args = parser.parse_args()
 
@@ -315,6 +317,19 @@ def main():
         conteo_fuentes[fuente] = len(nuevas)
         conversaciones += nuevas
         print(f"  -> {len(nuevas):,} conversaciones\n")
+
+    # El corpus traducido conserva alrededor de un 1% de respuestas sin
+    # traducir. Parece poco, pero es el unico ingles que Atlas ve etiquetado
+    # como "asi se responde", y basta: en conversacion real el ingles
+    # aparecia en 3 de cada 8 turnos. Un asistente en espanol no tiene por
+    # que aprender de esas.
+    if not args.sin_filtro_idioma:
+        antes = len(conversaciones)
+        conversaciones = [c for c in conversaciones
+                          if all(es_espanol(a) is not False for _, a in c)]
+        fuera = antes - len(conversaciones)
+        print(f"Filtro de idioma: descartadas {fuera:,} conversaciones "
+              f"({fuera / antes * 100:.1f}%) cuya respuesta no esta en espanol\n")
 
     print(f"Total: {len(conversaciones):,} conversaciones. Codificando...")
     ejemplos, descartadas = [], 0

@@ -40,6 +40,7 @@ import unicodedata
 import torch
 
 from checkpoint_utils import cargar_modelo
+from text_cleaning import es_espanol
 from inferencia import id_fin_de_turno, recortar_respuesta
 
 # ---------------------------------------------------------------- preguntas
@@ -73,27 +74,24 @@ CONVERSACION = [
     "Hola", "Hola, buenos días", "¿Cómo estás?", "Gracias", "Adiós",
 ]
 
-# Palabras muy frecuentes de cada idioma, para saber en cual esta escrita
-# una respuesta sin depender de ninguna libreria externa.
-PAL_ES = set("de la que el en y a los se del las un por con no una su para es al lo como más pero sus le ya o este sí porque esta cuando muy sobre también me hasta hay donde quien desde todo nos durante todos uno les ni contra otros ese eso ante ellos e esto mí antes algunos qué unos yo otro otras otra él tanto esa estos mucho quienes nada muchos cual poco ella estar estas algunas algo nosotros".split())
-PAL_EN = set("the of and to in is that it for with was are you your this be have not on as at by from or an we they he she his her their there but what all can will one would about which when who been has had do does did if my me so no out up".split())
-
+# Conversaciones enteras, con el contexto acumulandose turno a turno igual
+# que en chat.py. Existen porque el examen tenia un punto ciego: media 97.8%
+# de espanol haciendo preguntas sueltas, y en conversacion real el ingles
+# aparecia en 3 de cada 8 turnos. Lo que se usa es la conversacion, no la
+# pregunta aislada, asi que hay que medir eso.
+#
+# Se escriben como escribe la gente en un chat: sin tildes, sin signos de
+# apertura y en minusculas. Atlas tiene que aguantarlo.
+CONVERSACIONES = [
+    ["Hola", "¿Cómo te llamas?", "¿Quién te creó?"],
+    ["Que es la fotosintesis", "y para que sirve", "gracias"],
+    ["Hola, buenos dias", "que es una guerra", "que es el futbol"],
+    ["Dame 3 ideas para estudiar mejor", "cual es la mejor", "por que"],
+]
 
 def sin_tildes(t: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", t.lower())
                    if unicodedata.category(c) != "Mn")
-
-
-def es_espanol(texto: str) -> bool | None:
-    """None si la respuesta es demasiado corta para decidir."""
-    pal = re.findall(r"[a-záéíóúñü]+", texto.lower())
-    if len(pal) < 6:
-        return None
-    ne = sum(p in PAL_EN for p in pal)
-    nes = sum(p in PAL_ES for p in pal)
-    if ne == 0 and nes == 0:
-        return None
-    return nes >= ne
 
 
 def contar_elementos(texto: str) -> int:
@@ -206,7 +204,37 @@ def main():
             ok_rel += any(c in sin_tildes(r) for c in map(sin_tildes, claves))
         muestrario.append((pregunta, r))
 
-    # --- conversacion (solo alimenta las metricas globales) ---
+    # --- conversaciones enteras: mide si aguanta el contexto acumulado ---
+    from bpe_tokenizer import FIN_TURNO
+    id_fin = id_fin_de_turno(tok)
+    cierre = f"{FIN_TURNO}\n" if id_fin is not None else "\n\n"
+    por_turno = {}          # numero de turno -> [juicios de idioma]
+    for k in range(args.muestras):
+        for conversacion in CONVERSACIONES:
+            contexto = ""
+            for n, pregunta in enumerate(conversacion, start=1):
+                contexto += f"Usuario: {pregunta}\nAtlas:"
+                torch.manual_seed(2000 + k * 13 + n)
+                ids = tok.encode(contexto)[-bs:]
+                idx = torch.tensor([ids], dtype=torch.long, device=device)
+                sal = model.generate(
+                    idx, max_new_tokens=args.length, temperature=args.temperature,
+                    top_k=args.top_k if args.top_k > 0 else None,
+                    top_p=args.top_p if args.top_p < 1.0 else None,
+                    repetition_penalty=args.repeticion, stop_id=id_fin,
+                )[0].tolist()
+                r = recortar_respuesta(tok.decode(sal[len(ids):]))
+                todas.append(r)
+                por_turno.setdefault(n, []).append(es_espanol(r))
+                contexto += f" {r}{cierre}"
+            muestrario.append((" / ".join(conversacion), r))
+
+    espanol_por_turno = {}
+    for n, juicios in sorted(por_turno.items()):
+        d = [j for j in juicios if j is not None]
+        espanol_por_turno[n] = (sum(d) / len(d) * 100 if d else float("nan"), len(d))
+
+    # --- conversacion suelta (solo alimenta las metricas globales) ---
     for pregunta in CONVERSACION:
         for k in range(args.muestras):
             r, _ = pedir(pregunta, k); todas.append(r)
@@ -249,6 +277,7 @@ def main():
         "parada_limpia": limpias,
         "respuestas_vacias": vacias,
         "palabras_por_respuesta": largo,
+        "espanol_por_turno": {n: v[0] for n, v in espanol_por_turno.items()},
         "n_respuestas": len(todas),
     }
 
@@ -269,6 +298,15 @@ def main():
     for nombre, valor, sentido in filas:
         barra = "#" * round(valor / 4)
         print(f"  {nombre:26s} {valor:5.1f}%  {barra:<25s} {sentido}")
+    print("\n  En conversacion seguida, ¿sigue respondiendo en espanol?")
+    for n, (pct, cuantas) in espanol_por_turno.items():
+        print(f"    turno {n}: {pct:5.1f}%   (sobre {cuantas} respuestas juzgables)")
+    if len(espanol_por_turno) > 1:
+        primero = espanol_por_turno[1][0]
+        ultimo = espanol_por_turno[max(espanol_por_turno)][0]
+        if primero == primero and ultimo == ultimo and ultimo < primero - 10:
+            print(f"    -> se degrada {primero - ultimo:.0f} puntos al acumularse el contexto")
+
     # Diagnostico de las listas: cuantos elementos pidio y cuantos dio.
     from collections import Counter
     print(f"\n  Listas: {res['obediencia_listas']:.0f}% acierta (lo que genera Atlas); "
