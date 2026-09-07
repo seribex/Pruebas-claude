@@ -32,6 +32,7 @@ serie completa dentro de seis meses y ver la curva.
 
 import argparse
 import json
+import math
 import os
 import re
 import time
@@ -50,6 +51,8 @@ IDENTIDAD = [
     ("¿Quién eres?", "nombre"), ("Preséntate", "nombre"),
     ("¿Quién te creó?", "creador"), ("¿Quién te hizo?", "creador"),
     ("quien te creo", "creador"), ("¿De dónde vienes?", "creador"),
+    ("¿Quién es tu creador?", "creador"), ("¿Quién te programó?", "creador"),
+    ("Dime el nombre de tu creador", "creador"), ("quien esta detras de ti", "creador"),
 ]
 # (instruccion, cuantos elementos se piden)
 LISTAS = [
@@ -58,6 +61,11 @@ LISTAS = [
     ("Dame 3 ideas para estudiar mejor", 3),
     ("Nombra 5 animales", 5),
     ("Dame 2 consejos para dormir mejor", 2),
+    ("Escribe una lista de 3 países", 3),
+    ("Dame 4 ejemplos de deportes", 4),
+    ("Nombra 2 instrumentos musicales", 2),
+    ("Escribe 5 profesiones", 5),
+    ("Dame 3 nombres de ríos", 3),
 ]
 # (pregunta, palabras que una respuesta relevante deberia mencionar)
 RELEVANCIA = [
@@ -88,6 +96,22 @@ CONVERSACIONES = [
     ["Hola, buenos dias", "que es una guerra", "que es el futbol"],
     ["Dame 3 ideas para estudiar mejor", "cual es la mejor", "por que"],
 ]
+
+def intervalo(exitos: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """Intervalo de confianza del 95% (metodo de Wilson).
+
+    Un porcentaje sin su intervalo engana: con 25 respuestas, un 24% y un
+    12% son indistinguibles -- puro azar del muestreo. Nos paso: interprete
+    como mejoras y empeoramientos diferencias que no significaban nada.
+    """
+    if n == 0:
+        return (float("nan"), float("nan"))
+    p = exitos / n
+    d = 1 + z * z / n
+    centro = (p + z * z / (2 * n)) / d
+    radio = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (max(0.0, centro - radio) * 100, min(1.0, centro + radio) * 100)
+
 
 def sin_tildes(t: str) -> str:
     return "".join(c for c in unicodedata.normalize("NFD", t.lower())
@@ -132,8 +156,11 @@ def main():
     p = argparse.ArgumentParser(description="Examen automatico de Atlas Lumerak.")
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--vocab", default=None)
-    p.add_argument("--muestras", type=int, default=5,
-                   help="Cuantas veces se hace cada pregunta. Mas = medida mas estable.")
+    p.add_argument("--muestras", type=int, default=20,
+                   help="Cuantas veces se hace cada pregunta. Con 5 (el valor anterior) los "
+                        "intervalos eran de +-15 puntos y no se distinguia una mejora del "
+                        "azar. Para detectar un cambio de 10 puntos hacen falta del orden de "
+                        "250 respuestas por medida.")
     p.add_argument("--length", type=int, default=100)
     p.add_argument("--temperature", type=float, default=0.4)
     p.add_argument("--top_k", type=int, default=40)
@@ -284,20 +311,31 @@ def main():
     print("=" * 62)
     print(f"{'EXAMEN DE ATLAS LUMERAK':^62}")
     print("=" * 62)
+    # Cada medida con su intervalo: sin el, no hay forma de saber si una
+    # diferencia entre dos modelos es real o es el azar del muestreo.
     filas = [
-        ("Dice su nombre", res["identidad_nombre"], "mas es mejor"),
-        ("Dice quien lo creo", res["identidad_creador"], "mas es mejor"),
-        ("Responde en espanol", res["espanol"],
-         f"mas es mejor (sobre {len(decidibles)} de {len(todas)} juzgables)"),
-        ("Obedece el numero pedido", res["obediencia_listas"], "mas es mejor"),
-        ("Habla del tema preguntado", res["relevancia"], "mas es mejor"),
-        ("Termina la frase", res["parada_limpia"], "mas es mejor"),
-        ("Se repite", res["repeticion"], "MENOS es mejor"),
-        ("Respuestas vacias", res["respuestas_vacias"], "MENOS es mejor"),
+        ("Dice su nombre", aciertos_nombre, total_nombre, "+"),
+        ("Dice quien lo creo", aciertos_creador, total_creador, "+"),
+        ("Responde en espanol", sum(decidibles), len(decidibles), "+"),
+        ("Obedece el numero pedido", ok_listas_crudo, total_listas, "+"),
+        ("Habla del tema preguntado", ok_rel, total_rel, "+"),
+        ("Termina la frase", sum(termina_limpio(r) for r in todas), len(todas), "+"),
+        ("Se repite", None, None, "-"),
+        ("Respuestas vacias", sum(not r.strip() for r in todas), len(todas), "-"),
     ]
-    for nombre, valor, sentido in filas:
-        barra = "#" * round(valor / 4)
-        print(f"  {nombre:26s} {valor:5.1f}%  {barra:<25s} {sentido}")
+    for nombre, exitos, n, signo in filas:
+        if exitos is None:
+            print(f"  {nombre:26s} {repes:5.1f}%  {'':<16s} MENOS es mejor")
+            continue
+        pct = exitos / n * 100 if n else float("nan")
+        a, b = intervalo(exitos, n)
+        sentido = "mas es mejor" if signo == "+" else "MENOS es mejor"
+        ancho = b - a
+        aviso = "  <-- pocas muestras" if ancho > 20 else ""
+        print(f"  {nombre:26s} {pct:5.1f}%  [{a:4.0f}-{b:3.0f}]  n={n:<4d} {sentido}{aviso}")
+
+    print("\n  Los corchetes son el intervalo del 95%: donde esta el valor verdadero.")
+    print("  Dos modelos solo son distintos si sus intervalos NO se solapan.")
     print("\n  En conversacion seguida, ¿sigue respondiendo en espanol?")
     for n, (pct, cuantas) in espanol_por_turno.items():
         print(f"    turno {n}: {pct:5.1f}%   (sobre {cuantas} respuestas juzgables)")
