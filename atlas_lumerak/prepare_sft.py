@@ -36,7 +36,7 @@ import numpy as np
 import pandas as pd
 
 import identidad
-from bpe_tokenizer import BPETokenizer
+from bpe_tokenizer import BPETokenizer, FIN_TURNO
 from text_cleaning import limpiar_texto
 
 HF = "https://huggingface.co/datasets"
@@ -207,25 +207,32 @@ def codificar(conv: Conversacion, tok: BPETokenizer, largo_max: int):
     """Devuelve (tokens, mascara) o None si no entra ni recortando turnos.
 
     La mascara vale 1 en los tokens que Atlas tiene que aprender a producir
-    (su respuesta y el salto de linea con el que termina) y 0 en los de la
-    pregunta. El "\\n\\n" final entra a proposito en la parte con 1: es la
-    unica senal que tiene el modelo de "aca termino de responder".
+    -- su respuesta y el simbolo de fin de turno -- y 0 en los de la
+    pregunta.
+
+    El simbolo de fin de turno entra en la parte supervisada a proposito:
+    aprender a emitirlo ES la tarea. Antes se usaba una linea en blanco como
+    final, pero medido sobre los datos reales solo el 27% de las lineas en
+    blanco marcaban un final; el otro 73% separaba parrafos dentro de la
+    respuesta. Ese simbolo, en cambio, no significa ninguna otra cosa.
 
     Se codifica la pregunta y la respuesta por separado para saber donde
     cae exactamente la frontera. Da el mismo resultado que codificar todo
     junto porque el BPE parte el texto en palabras antes de fusionar, y
     " Claro" (con su espacio) es siempre una palabra aparte.
     """
+    id_fin = tok.especiales[FIN_TURNO]
+    salto = tok.encode("\n")     # separa un turno del siguiente, ya sin supervisar
     turnos = list(conv)
     while turnos:
         ids: list[int] = []
         mascara: list[int] = []
         for usuario, atlas in turnos:
             pregunta = limpiar_texto(f"Usuario: {usuario}\nAtlas:")
-            respuesta = limpiar_texto(f" {atlas}\n\n")
+            respuesta = limpiar_texto(f" {atlas}")
             ip, ir = tok.encode(pregunta), tok.encode(respuesta)
-            ids += ip + ir
-            mascara += [0] * len(ip) + [1] * len(ir)
+            ids += ip + ir + [id_fin] + salto
+            mascara += [0] * len(ip) + [1] * len(ir) + [1] + [0] * len(salto)
         if len(ids) <= largo_max:
             # Se devuelven como arrays de numpy y no como listas de Python:
             # con un millon de conversaciones la diferencia es de unos 3 GB
@@ -290,7 +297,15 @@ def main():
     os.makedirs(args.tmp, exist_ok=True)
 
     tok = BPETokenizer.load(args.bpe)
-    print(f"Tokenizador: {args.bpe} ({tok.vocab_size:,} simbolos)\n")
+    antes = tok.vocab_size
+    id_fin = tok.agregar_especial(FIN_TURNO)
+    print(f"Tokenizador: {args.bpe} ({antes:,} simbolos)")
+    if tok.vocab_size != antes:
+        print(f"  + simbolo de fin de turno {FIN_TURNO!r} = numero {id_fin} "
+              f"-> {tok.vocab_size:,} simbolos")
+        print(f"  (va al final: los {antes:,} anteriores conservan su numero y su "
+              f"significado para el modelo ya entrenado)")
+    print()
 
     conversaciones: list[Conversacion] = []
     conteo_fuentes = {}
@@ -328,6 +343,9 @@ def main():
           f"{supervisados:,} ({supervisados / len(arr_ids) * 100:.1f}%)")
 
     base = os.path.join(args.out_dir, args.nombre)
+    # El tokenizador ampliado se guarda junto al corpus: sin el, estos
+    # numeros no se pueden traducir de vuelta a texto.
+    tok.save(base + "_bpe.json")
     arr_ids.tofile(base + "_tokens.bin")
     arr_mask.tofile(base + "_mask.bin")
     meta = {
@@ -335,7 +353,8 @@ def main():
         "ventana": ventana,
         "n_ventanas": len(v_ids),
         "vocab_size": tok.vocab_size,
-        "bpe": os.path.basename(args.bpe),
+        "bpe": os.path.basename(base + "_bpe.json"),
+        "fin_de_turno": id_fin,
         "fuentes": conteo_fuentes,
         "ejemplos": len(ejemplos),
         "descartados": descartadas,
@@ -345,7 +364,8 @@ def main():
     with open(base + "_meta.json", "w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)
 
-    print(f"\nGuardado:\n  {base}_tokens.bin\n  {base}_mask.bin\n  {base}_meta.json")
+    print(f"\nGuardado:\n  {base}_tokens.bin\n  {base}_mask.bin\n  {base}_meta.json"
+          f"\n  {base}_bpe.json  (tokenizador ampliado -- usa ESTE de aqui en adelante)")
 
 
 if __name__ == "__main__":

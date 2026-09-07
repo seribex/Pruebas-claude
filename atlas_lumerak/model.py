@@ -171,6 +171,7 @@ class TransformerLanguageModel(nn.Module):
         top_p: float | None = None,
         repetition_penalty: float = 1.0,
         penalty_window: int = 128,
+        stop_id: int | None = None,
     ):
         """
         temperature: que tan "arriesgado" es al elegir. Menor a 1 hace que
@@ -201,6 +202,10 @@ class TransformerLanguageModel(nn.Module):
         penalty_window: cuantos tokens de la respuesta actual mira el castigo.
             Mirarla entera haria imposible repetir palabras normales como
             "de" o "que"; una ventana corta solo corta los bucles.
+        stop_id: numero del simbolo de fin de turno. Al emitirlo, el modelo
+            deja de generar. Es la diferencia entre un modelo que sabe
+            cuando ha terminado y uno al que hay que cortarle la frase con
+            reglas desde fuera.
         """
         self.eval()
         # Donde empieza lo que genera el modelo. Todo lo anterior es la
@@ -242,5 +247,9 @@ class TransformerLanguageModel(nn.Module):
             probs = F.softmax(logits, dim=-1)
             next_id = torch.multinomial(probs, num_samples=1)
             idx = torch.cat([idx, next_id], dim=1)
+            # Solo se corta si TODAS las secuencias del lote terminaron; en
+            # el chat siempre es una sola.
+            if stop_id is not None and (next_id == stop_id).all():
+                break
         self.train()
         return idx

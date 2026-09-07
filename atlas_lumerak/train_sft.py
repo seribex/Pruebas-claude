@@ -37,6 +37,7 @@ import numpy as np
 import torch
 
 from bpe_tokenizer import BPETokenizer
+from checkpoint_utils import ampliar_vocabulario
 from model import TransformerLanguageModel
 
 IGNORAR = -100  # valor que F.cross_entropy descarta (ver model.py)
@@ -136,7 +137,9 @@ def main():
     p.add_argument("--sft", required=True,
                    help="Prefijo de los archivos de prepare_sft.py (sin _tokens.bin).")
     p.add_argument("--checkpoint", required=True, help="Modelo pre-entrenado del que partir.")
-    p.add_argument("--bpe", required=True)
+    p.add_argument("--bpe", default=None,
+                   help="Por defecto, el tokenizador que dejo prepare_sft.py junto al corpus "
+                        "(<sft>_bpe.json). Ese es el que trae el simbolo de fin de turno.")
     p.add_argument("--tokens_pre", default=None,
                    help="Corpus de pre-entrenamiento para mezclar (evita el olvido).")
     p.add_argument("--mezcla_pre", type=float, default=0.1,
@@ -178,13 +181,20 @@ def main():
             f"El modelo usa contexto de {block_size} tokens y el corpus se preparo para "
             f"{datos.meta['block_size']}. Vuelve a correr prepare_sft.py con "
             f"--block_size {block_size}.")
-    tok = BPETokenizer.load(args.bpe)
+    ruta_bpe = args.bpe or (args.sft + "_bpe.json")
+    tok = BPETokenizer.load(ruta_bpe)
+    estado = quitar_prefijo_compile(ckpt["model_state_dict"])
     if tok.vocab_size != config["vocab_size"]:
-        raise ValueError(f"El tokenizador tiene {tok.vocab_size} simbolos y el modelo espera "
-                         f"{config['vocab_size']}. No son el mismo.")
+        # El corpus trae simbolos que el modelo no conocia (el fin de turno).
+        # Se le agrandan las tablas conservando todo lo aprendido: los
+        # simbolos viejos mantienen su numero y su vector.
+        antes = config["vocab_size"]
+        estado, config = ampliar_vocabulario(estado, config, tok.vocab_size)
+        print(f"Vocabulario ampliado: {antes:,} -> {config['vocab_size']:,} simbolos "
+              f"(lo aprendido se conserva intacto)")
 
     model = TransformerLanguageModel(**config).to(device)
-    model.load_state_dict(quitar_prefijo_compile(ckpt["model_state_dict"]))
+    model.load_state_dict(estado)
     print(f"Modelo cargado: {sum(x.numel() for x in model.parameters()):,} parametros | {config}")
 
     # Separacion honesta: las ventanas de validacion nunca se entrenan.

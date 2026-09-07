@@ -17,6 +17,8 @@ cortar en la primera linea en blanco recupera lo bueno y descarta el resto.
 
 import re
 
+from bpe_tokenizer import FIN_TURNO
+
 MARCA_USUARIO = "\nUsuario:"
 # Un bloque que empieza en "1." , "2)" , "-" o "*" es la continuacion de una
 # lista, no un parrafo nuevo. Se exige el espacio y algo detras para no
@@ -24,9 +26,22 @@ MARCA_USUARIO = "\nUsuario:"
 ELEMENTO_DE_LISTA = re.compile(r"^\s*(?:\d+[\.\)]|[-*•])\s+\S")
 
 
+def id_fin_de_turno(tok) -> int | None:
+    """Numero del simbolo de fin de turno, o None si el modelo es anterior a
+    que existiera. Devolver None hace que todo siga funcionando igual que
+    antes con los checkpoints viejos."""
+    return getattr(tok, "especiales", {}).get(FIN_TURNO)
+
+
 def recortar_respuesta(texto: str, parar_en_blanco: bool = True) -> str:
     """Se queda con la respuesta y descarta la inercia que viene despues."""
     # Si empieza a inventarse el turno del usuario, ahi termino seguro.
+    # El simbolo de fin de turno es la senal buena: si esta, no hay nada
+    # que adivinar. Todo lo de abajo son muletas para los modelos que no lo
+    # tienen (el Atlas entrenado antes de este cambio).
+    if FIN_TURNO in texto:
+        return texto.split(FIN_TURNO)[0].strip()
+
     texto = texto.split(MARCA_USUARIO)[0]
     if not parar_en_blanco:
         return texto.strip()

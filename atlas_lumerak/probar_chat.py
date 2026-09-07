@@ -17,7 +17,7 @@ import textwrap
 import torch
 
 from checkpoint_utils import cargar_modelo
-from inferencia import recortar_respuesta
+from inferencia import id_fin_de_turno, recortar_respuesta
 
 PREGUNTAS = [
     # Identidad
@@ -69,6 +69,7 @@ def main():
             top_k=args.top_k if args.top_k > 0 else None,
             top_p=args.top_p if args.top_p < 1.0 else None,
             repetition_penalty=args.repeticion,
+            stop_id=id_fin_de_turno(tok),
         )[0].tolist()
         respuesta = recortar_respuesta(tok.decode(salida[len(ids):]),
                                        parar_en_blanco=not args.sin_recorte)

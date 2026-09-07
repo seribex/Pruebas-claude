@@ -32,6 +32,19 @@ from collections import Counter, defaultdict
 # lo que permite reconstruir el texto exactamente al decodificar.
 PATRON = re.compile(r" ?\w+| ?[^\s\w]+|\s+")
 
+# Simbolo de "aqui termino mi turno". Atlas no tenia ninguno: se le enseno
+# que sus respuestas acaban en una linea en blanco, pero medido sobre los
+# datos reales, de cada 1093 lineas en blanco solo 300 marcaban el final --
+# las otras 793 separaban parrafos DENTRO de la respuesta. Le dimos una
+# senal que el 73% de las veces significaba lo contrario, y de ahi vienen
+# casi todos sus defectos: divagar, repetirse y pasarse del numero de
+# elementos que se le pide.
+#
+# La forma "<|fin|>" se elige porque el separador de palabras (PATRON) la
+# parte en tres trozos, asi que el texto normal NUNCA puede producirla por
+# accidente aunque alguien la escriba a mano.
+FIN_TURNO = "<|fin|>"
+
 
 class BPETokenizer:
     def __init__(self):
@@ -43,6 +56,9 @@ class BPETokenizer:
         self.merge_ranks: dict[tuple[str, str], int] = {}
         self.token_to_id: dict[str, int] = {}
         self.id_to_token: dict[int, str] = {}
+        # Simbolos que no se aprenden del texto sino que se anaden a mano, y
+        # que encode() reconoce enteros en vez de partirlos en trozos.
+        self.especiales: dict[str, int] = {}
         self._cache: dict[str, list[int]] = {}
 
     @property
@@ -162,7 +178,38 @@ class BPETokenizer:
         self._cache[palabra] = ids
         return ids
 
+    def agregar_especial(self, token: str) -> int:
+        """Anade un simbolo al final del vocabulario y devuelve su numero.
+
+        Si ya existe, no lo duplica: devuelve el que tenia. Va al final a
+        proposito, para que todos los numeros anteriores sigan significando
+        lo mismo y un modelo ya entrenado siga siendo valido."""
+        if token in self.token_to_id:
+            ident = self.token_to_id[token]
+        else:
+            ident = len(self.token_to_id)
+            self.token_to_id[token] = ident
+            self.id_to_token[ident] = token
+        self.especiales[token] = ident
+        return ident
+
     def encode(self, texto: str) -> list[int]:
+        if self.especiales:
+            # Los simbolos especiales se reconocen enteros. Sin esto, un
+            # "<|fin|>" escrito en el texto se partiria en trozos y el
+            # modelo nunca veria la senal de fin de turno -- que es
+            # exactamente lo que necesita chat.py al rearmar el contexto.
+            partes = re.split("(" + "|".join(re.escape(t) for t in self.especiales) + ")", texto)
+            ids: list[int] = []
+            for parte in partes:
+                if parte in self.especiales:
+                    ids.append(self.especiales[parte])
+                elif parte:
+                    ids.extend(self._codificar_texto(parte))
+            return ids
+        return self._codificar_texto(texto)
+
+    def _codificar_texto(self, texto: str) -> list[int]:
         ids: list[int] = []
         for palabra in PATRON.findall(texto):
             ids.extend(self._tokenizar_palabra(palabra))
@@ -178,6 +225,7 @@ class BPETokenizer:
                 {
                     "vocabulario": [t for t, _ in sorted(self.token_to_id.items(), key=lambda kv: kv[1])],
                     "merges": [[a, b] for (a, b) in self.merges],
+                    "especiales": sorted(self.especiales, key=self.especiales.get),
                 },
                 f,
                 ensure_ascii=False,
@@ -192,4 +240,6 @@ class BPETokenizer:
         tok.id_to_token = {i: t for t, i in tok.token_to_id.items()}
         tok.merges = {(a, b): a + b for a, b in datos["merges"]}
         tok.merge_ranks = {(a, b): i for i, (a, b) in enumerate(datos["merges"])}
+        for especial in datos.get("especiales", []):
+            tok.especiales[especial] = tok.token_to_id[especial]
         return tok

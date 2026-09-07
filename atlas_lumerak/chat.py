@@ -17,7 +17,8 @@ import time
 import torch
 
 from checkpoint_utils import cargar_modelo
-from inferencia import recortar_respuesta
+from bpe_tokenizer import FIN_TURNO
+from inferencia import id_fin_de_turno, recortar_respuesta
 
 
 def main():
@@ -49,6 +50,9 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, tokenizer, config = cargar_modelo(args.checkpoint, device, args.vocab)
     block_size = config["block_size"]
+    id_fin = id_fin_de_turno(tokenizer)
+    if id_fin is not None:
+        print("(este Atlas sabe decir cuando ha terminado de hablar)")
 
     print("=== Atlas Lumerak ===")
     print(f"(memoria de hasta {block_size} tokens -- escribe 'salir' para terminar)\n")
@@ -67,6 +71,9 @@ def main():
             print("Hasta luego.")
             break
 
+        # Si alguien escribe el simbolo de fin a mano, se quita: dejarlo
+        # pasar meteria un final de turno falso en medio del contexto.
+        entrada = entrada.replace(FIN_TURNO, "")
         turnos.append(f"Usuario: {entrada}\nAtlas:")
 
         # El modelo solo alcanza a ver block_size tokens. Se descartan los
@@ -89,13 +96,17 @@ def main():
             top_k=args.top_k if args.top_k > 0 else None,
             top_p=args.top_p if args.top_p < 1.0 else None,
             repetition_penalty=args.repeticion,
+            stop_id=id_fin,
         )[0].tolist()
 
         crudo = tokenizer.decode(salida[len(ids):])
         respuesta = recortar_respuesta(crudo, parar_en_blanco=not args.sin_recorte)
         print(f"Atlas: {respuesta}\n")
 
-        turnos[-1] += f" {respuesta}\n\n"
+        # Se rearma el turno en el MISMO formato con el que se entreno: la
+        # respuesta, el simbolo de fin y un salto de linea.
+        cierre = f"{FIN_TURNO}\n" if id_fin is not None else "\n\n"
+        turnos[-1] += f" {respuesta}{cierre}"
 
         util = input("¿Fue util esta respuesta? (s/n, Enter para omitir): ").strip().lower()
         with open(args.log, "a", encoding="utf-8") as f:
