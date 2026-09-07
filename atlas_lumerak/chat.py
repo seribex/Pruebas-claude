@@ -17,8 +17,7 @@ import time
 import torch
 
 from checkpoint_utils import cargar_modelo
-
-STOP_MARKER = "\nUsuario:"
+from inferencia import recortar_respuesta
 
 
 def main():
@@ -28,12 +27,17 @@ def main():
                         help="Tokenizador (por defecto: el que indique el checkpoint, en su misma carpeta).")
     parser.add_argument("--response_length", type=int, default=200)
     parser.add_argument("--log", default="atlas_lumerak/data/chat_log.jsonl")
+    parser.add_argument("--sin_recorte", action="store_true",
+                        help="Mostrar todo lo que genera, sin cortar en la primera linea en blanco.")
     # Valores mas "frios" que los de generate.py a proposito. Conversando,
-    # un solo token desafortunado descarrila la respuesta entera (medido:
-    # "ideas para estudiar mejor" -> "ideas para construir un edificio"), y
-    # en un modelo de este tamano eso pasa seguido. Al escribir texto libre
-    # esa variedad se agradece; al responder una pregunta, estorba.
-    parser.add_argument("--temperature", type=float, default=0.7)
+    # un solo token desafortunado descarrila la respuesta entera, y en un
+    # modelo de este tamano eso pasa seguido. Comprobado sobre la bateria de
+    # preguntas: eligiendo SIEMPRE la palabra mas probable (sin azar), Atlas
+    # contesta "Me llamo Atlas Lumerak" y "La capital de Francia es Paris";
+    # con temperatura 0.7 contestaba "Me alegra que te llames". Sabia la
+    # respuesta -- el azar se la arruinaba. Al escribir texto libre esa
+    # variedad se agradece; al responder una pregunta, estorba.
+    parser.add_argument("--temperature", type=float, default=0.4)
     parser.add_argument("--top_k", type=int, default=40, help="0 para desactivar")
     parser.add_argument("--top_p", type=float, default=0.9,
                         help="Se queda con los pocos candidatos que junten esta probabilidad. "
@@ -78,10 +82,7 @@ def main():
         )[0].tolist()
 
         crudo = tokenizer.decode(salida[len(ids):])
-        # El modelo no tiene una senal explicita de "aqui termina mi
-        # respuesta", asi que se corta si empieza a inventar por su
-        # cuenta el siguiente turno del usuario.
-        respuesta = crudo.split(STOP_MARKER)[0].strip()
+        respuesta = recortar_respuesta(crudo, parar_en_blanco=not args.sin_recorte)
         print(f"Atlas: {respuesta}\n")
 
         contexto += f" {respuesta}\n\n"

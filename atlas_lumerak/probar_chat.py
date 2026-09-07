@@ -17,8 +17,7 @@ import textwrap
 import torch
 
 from checkpoint_utils import cargar_modelo
-
-STOP = "\nUsuario:"
+from inferencia import recortar_respuesta
 
 PREGUNTAS = [
     # Identidad
@@ -43,11 +42,13 @@ def main():
     p.add_argument("--checkpoint", required=True)
     p.add_argument("--vocab", default=None)
     p.add_argument("--length", type=int, default=120)
-    p.add_argument("--temperature", type=float, default=0.7)
+    p.add_argument("--temperature", type=float, default=0.4)
     p.add_argument("--top_k", type=int, default=40, help="0 para desactivar")
     p.add_argument("--top_p", type=float, default=0.9, help="1.0 para desactivar")
     p.add_argument("--repeticion", type=float, default=1.15)
     p.add_argument("--semilla", type=int, default=1234)
+    p.add_argument("--sin_recorte", action="store_true",
+                   help="Mostrar todo lo que genera, sin cortar en la primera linea en blanco.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -69,7 +70,8 @@ def main():
             top_p=args.top_p if args.top_p < 1.0 else None,
             repetition_penalty=args.repeticion,
         )[0].tolist()
-        respuesta = tok.decode(salida[len(ids):]).split(STOP)[0].strip()
+        respuesta = recortar_respuesta(tok.decode(salida[len(ids):]),
+                                       parar_en_blanco=not args.sin_recorte)
         print(f"--- {i + 1}. {pregunta}")
         print(textwrap.indent(respuesta or "(vacio)", "    "))
         print()
