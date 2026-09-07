@@ -231,6 +231,13 @@ def main():
     # perdida de precision insignificante para esto.
     autocast_ctx = torch.autocast(device_type=device, dtype=torch.bfloat16, enabled=(device == "cuda"))
 
+    # `modelo_paso` es el que se usa para calcular; `model` sigue siendo
+    # SIEMPRE el original. La distincion no es cosmetica: torch.compile
+    # envuelve el modelo y le cambia el nombre a todos sus pesos, poniendoles
+    # "_orig_mod." delante. Si se guardara el envoltorio, el checkpoint
+    # resultante no se podria volver a cargar en ningun lado -- y el error
+    # no aparece hasta que intentas usarlo, con el entrenamiento ya gastado.
+    modelo_paso = model
     if device == "cuda":
         # torch.compile() en si nunca falla -- solo "envuelve" el modelo.
         # El error real (por ejemplo, si falta Triton en el sistema) recien
@@ -242,7 +249,7 @@ def main():
             xb_test, yb_test = get_batch(train_data, block_size, args.batch_size, device)
             with autocast_ctx:
                 compiled_model(xb_test, yb_test)
-            model = compiled_model
+            modelo_paso = compiled_model
             print("torch.compile activado (el primer paso tardara un poco mas mientras compila).")
         except Exception as e:
             print(f"Aviso: no se pudo activar torch.compile ({type(e).__name__}: {e}), se sigue sin el.")
@@ -326,7 +333,7 @@ def main():
     for step in range(paso_inicial, args.steps):
         xb, yb = get_batch(train_data, block_size, args.batch_size, device)
         with autocast_ctx:
-            _, loss = model(xb, yb)
+            _, loss = modelo_paso(xb, yb)
         optimizer.zero_grad(set_to_none=True)
         loss.backward()
         # Evita que gradientes anormalmente grandes (poco frecuentes, pero
@@ -338,7 +345,7 @@ def main():
         scheduler.step()
 
         if step % args.eval_interval == 0 or step == args.steps - 1:
-            losses = estimate_loss(model, train_data, val_data, block_size, args.batch_size, device, autocast_ctx)
+            losses = estimate_loss(modelo_paso, train_data, val_data, block_size, args.batch_size, device, autocast_ctx)
             elapsed = time.time() - start_time
             print(
                 f"paso {step:5d}/{args.steps} | "

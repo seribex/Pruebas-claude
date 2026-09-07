@@ -71,12 +71,46 @@ class DatosSFT:
         return x.to(device), y.to(device)
 
 
-def lote_pre(data: torch.Tensor, block_size: int, batch_size: int, device: str):
-    """Lote normal del corpus de pre-entrenamiento: sin mascara, todo cuenta."""
-    ix = torch.randint(len(data) - block_size - 1, (batch_size,))
+def quitar_prefijo_compile(estado: dict) -> dict:
+    """Un modelo envuelto por torch.compile guarda sus pesos con el prefijo
+    "_orig_mod." delante de cada nombre. Un checkpoint asi no se puede cargar
+    en un modelo normal. Se le quita si lo trae."""
+    if any(k.startswith("_orig_mod.") for k in estado):
+        return {k.removeprefix("_orig_mod."): v for k, v in estado.items()}
+    return estado
+
+
+def lote_pre(data: torch.Tensor, block_size: int, batch_size: int, device: str,
+             generador: torch.Generator | None = None):
+    """Lote normal del corpus de pre-entrenamiento: sin mascara, todo cuenta.
+
+    `generador` existe para las evaluaciones, que necesitan sacar siempre los
+    mismos lotes. Tiene que ser un generador PROPIO y no la semilla global:
+    reiniciar la global desde una evaluacion tambien reiniciaria la eleccion
+    de lotes del entrenamiento, y el modelo pasaria el resto de la corrida
+    viendo una y otra vez los mismos ejemplos sin que nada lo delate."""
+    ix = torch.randint(len(data) - block_size - 1, (batch_size,), generator=generador)
     x = torch.stack([data[i:i + block_size] for i in ix]).long()
     y = torch.stack([data[i + 1:i + block_size + 1] for i in ix]).long()
     return x.to(device), y.to(device)
+
+
+@torch.no_grad()
+def evaluar_olvido(model, pre_val, block_size, batch_size, device, autocast_ctx, lotes=20):
+    """Perdida sobre Wikipedia, en el mismo 10% apartado con el que se midio
+    el modelo antes de empezar. Sirve para una sola pregunta: mientras aprende
+    a conversar, ¿cuanto esta olvidando de lo que sabia? Es directamente
+    comparable con el numero que da evaluar.py."""
+    model.eval()
+    total = 0.0
+    g = torch.Generator().manual_seed(0)
+    for _ in range(lotes):
+        x, y = lote_pre(pre_val, block_size, batch_size, device, generador=g)
+        with autocast_ctx:
+            _, loss = model(x, y)
+        total += loss.item()
+    model.train()
+    return total / lotes
 
 
 @torch.no_grad()
@@ -150,7 +184,7 @@ def main():
                          f"{config['vocab_size']}. No son el mismo.")
 
     model = TransformerLanguageModel(**config).to(device)
-    model.load_state_dict(ckpt["model_state_dict"])
+    model.load_state_dict(quitar_prefijo_compile(ckpt["model_state_dict"]))
     print(f"Modelo cargado: {sum(x.numel() for x in model.parameters()):,} parametros | {config}")
 
     # Separacion honesta: las ventanas de validacion nunca se entrenan.
@@ -160,13 +194,19 @@ def main():
     idx_val, idx_train = orden[:n_val], orden[n_val:]
     print(f"Entrenamiento: {len(idx_train):,} ventanas | validacion: {len(idx_val):,}")
 
-    datos_pre = None
-    if args.tokens_pre and args.mezcla_pre > 0:
+    pre_train = pre_val = None
+    if args.tokens_pre:
         crudo = np.fromfile(args.tokens_pre, dtype=np.uint16)
         datos_pre = torch.from_numpy(crudo.astype(np.int32))
         del crudo
-        print(f"Mezcla de pre-entrenamiento: {args.mezcla_pre:.0%} de los lotes "
-              f"({len(datos_pre):,} tokens disponibles)")
+        # El mismo corte 90/10 que uso train.py. Es importante que la mezcla
+        # salga solo del 90% de entrenamiento: si entrenaramos sobre el 10%
+        # apartado, la medida de "cuanto esta olvidando" quedaria falseada.
+        corte = int(0.9 * len(datos_pre))
+        pre_train, pre_val = datos_pre[:corte], datos_pre[corte:]
+        print(f"Corpus original: {len(pre_train):,} tokens para mezclar "
+              f"({args.mezcla_pre:.0%} de los lotes) y {len(pre_val):,} apartados "
+              f"para medir el olvido")
     elif args.mezcla_pre > 0:
         print("Aviso: --mezcla_pre pedido pero sin --tokens_pre; se entrena solo con instrucciones.")
 
@@ -200,7 +240,7 @@ def main():
     paso_inicial, mejor_val = 0, float("inf")
     if args.continuar and os.path.exists(ruta_parcial):
         prev = torch.load(ruta_parcial, map_location="cpu")
-        model.load_state_dict(prev["model_state_dict"])
+        model.load_state_dict(quitar_prefijo_compile(prev["model_state_dict"]))
         model.to(device)
         info = prev["entrenamiento"]
         paso_inicial = info["paso"] + 1
@@ -248,10 +288,15 @@ def main():
     print(f"\nEntrenando {args.steps:,} pasos, lote {args.batch_size}, lr {args.lr}\n")
     t0 = time.time()
     rng = np.random.default_rng(123)
+    # Promedio de los lotes de conversacion desde la ultima evaluacion. Un
+    # solo lote suelto salta demasiado de un paso al otro como para saber si
+    # de verdad esta mejorando, y ademas uno de cada diez es de Wikipedia, o
+    # sea de otra escala: mezclarlos en el mismo numero seria enganoso.
+    suma_sft, n_sft = 0.0, 0
     for paso in range(paso_inicial, args.steps):
-        usar_pre = datos_pre is not None and rng.random() < args.mezcla_pre
+        usar_pre = pre_train is not None and rng.random() < args.mezcla_pre
         if usar_pre:
-            xb, yb = lote_pre(datos_pre, block_size, args.batch_size, device)
+            xb, yb = lote_pre(pre_train, block_size, args.batch_size, device)
         else:
             sel = idx_train[torch.randint(len(idx_train), (args.batch_size,))]
             xb, yb = datos.lote(sel, device)
@@ -264,15 +309,26 @@ def main():
         optimizer.step()
         scheduler.step()
 
+        if not usar_pre:
+            suma_sft += loss.item()
+            n_sft += 1
+
         if paso % args.eval_interval == 0 or paso == args.steps - 1:
             val = evaluar(modelo_paso, datos, idx_val, args.batch_size, device, autocast_ctx)
             marca = ""
             if val < mejor_val:
                 mejor_val = val
                 guardar(ruta_mejor, val=val)
-                marca = "  <-- mejor hasta ahora, guardado"
-            print(f"paso {paso:5d}/{args.steps} | perdida lote {loss.item():.4f} | "
-                  f"validacion (solo respuestas) {val:.4f} | "
+                marca = "  <-- mejor, guardado"
+            entrenamiento = f"{suma_sft / n_sft:.4f}" if n_sft else "  -   "
+            suma_sft, n_sft = 0.0, 0
+            olvido = ""
+            if pre_val is not None:
+                w = evaluar_olvido(modelo_paso, pre_val, block_size, args.batch_size,
+                                   device, autocast_ctx)
+                olvido = f" | wikipedia {w:.4f}"
+            print(f"paso {paso:5d}/{args.steps} | entrenamiento {entrenamiento} | "
+                  f"respuestas {val:.4f}{olvido} | "
                   f"{time.time() - t0:.0f}s{marca}", flush=True)
 
         if args.save_interval > 0 and paso > 0 and paso % args.save_interval == 0:
