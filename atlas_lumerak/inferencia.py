@@ -15,19 +15,37 @@ Mientras no exista un token dedicado de fin de turno (el arreglo de fondo),
 cortar en la primera linea en blanco recupera lo bueno y descarta el resto.
 """
 
+import re
+
 MARCA_USUARIO = "\nUsuario:"
+# Un bloque que empieza en "1." , "2)" , "-" o "*" es la continuacion de una
+# lista, no un parrafo nuevo. Se exige el espacio y algo detras para no
+# confundirlo con un ano ("2020 fue...") o una hora.
+ELEMENTO_DE_LISTA = re.compile(r"^\s*(?:\d+[\.\)]|[-*•])\s+\S")
 
 
 def recortar_respuesta(texto: str, parar_en_blanco: bool = True) -> str:
     """Se queda con la respuesta y descarta la inercia que viene despues."""
     # Si empieza a inventarse el turno del usuario, ahi termino seguro.
     texto = texto.split(MARCA_USUARIO)[0]
+    if not parar_en_blanco:
+        return texto.strip()
 
-    if parar_en_blanco:
-        # Primera linea en blanco = fin de la respuesta. Se pierde el caso
-        # legitimo de una respuesta de varios parrafos, pero hoy Atlas no
-        # produce ninguna que valga la pena mantener entera.
-        partes = texto.strip().split("\n\n")
-        texto = partes[0] if partes[0].strip() else texto
+    bloques = texto.strip().split("\n\n")
+    if not bloques or not bloques[0].strip():
+        return texto.strip()
 
-    return texto.strip()
+    # La primera linea en blanco marca el final de la respuesta... salvo
+    # cuando lo que sigue es otro elemento de la misma lista. Escribir
+    # "1. uno\n\n2. dos\n\n3. tres" es markdown normal y era como venia
+    # buena parte del corpus de entrenamiento; cortando en la primera linea
+    # en blanco, una lista de tres elementos se quedaba en uno.
+    # Medido sobre el modelo real: el acierto en "dame N cosas" pasaba del
+    # 24% al 4% por culpa de este recorte, no por culpa del modelo.
+    salida = [bloques[0]]
+    for b in bloques[1:]:
+        if not ELEMENTO_DE_LISTA.match(b):
+            break
+        salida.append(b)
+
+    return "\n\n".join(salida).strip()
