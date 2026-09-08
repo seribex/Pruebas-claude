@@ -199,6 +199,9 @@ def main():
     p.add_argument("--repeticion", type=float, default=1.15)
     p.add_argument("--historial", default="atlas_lumerak/data/examenes.jsonl")
     p.add_argument("--ejemplos", type=int, default=3, help="Cuantas respuestas mostrar al final.")
+    p.add_argument("--errores", type=int, default=4,
+                   help="Cuantos ejemplos de cada tipo de error imprimir. Todos se guardan "
+                        "ademas en data/errores.jsonl.")
     args = p.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -213,6 +216,15 @@ def main():
 
     t0 = time.time()
     todas, muestrario = [], []
+    # Cada respuesta equivocada se guarda entera, con lo que se le pidio y
+    # por que fallo. Un porcentaje dice CUANTO falla; solo el error concreto
+    # dice POR QUE, y sin eso no hay nada que corregir.
+    fallos: list[dict] = []
+
+    def anotar(categoria, pregunta, respuesta, ok, esperado=""):
+        if not ok:
+            fallos.append({"categoria": categoria, "pregunta": pregunta,
+                           "respuesta": respuesta, "esperado": esperado})
 
     def pedir(pregunta, k):
         """Devuelve (respuesta recortada, respuesta sin recortar)."""
@@ -226,10 +238,14 @@ def main():
             plano = sin_tildes(r)
             if tipo == "nombre":
                 total_nombre += 1
-                aciertos_nombre += "atlas lumerak" in plano
+                ok = "atlas lumerak" in plano
+                aciertos_nombre += ok
+                anotar("no dice su nombre", pregunta, r, ok, "Atlas Lumerak")
             else:
                 total_creador += 1
-                aciertos_creador += "sebastian" in plano
+                ok = "sebastian" in plano
+                aciertos_creador += ok
+                anotar("no dice quien lo creo", pregunta, r, ok, "Sebastian")
         muestrario.append((pregunta, r))
 
     # --- obediencia de listas ---
@@ -248,6 +264,8 @@ def main():
             total_listas += 1
             ok_listas += n_rec == esperados
             ok_listas_crudo += n_crudo == esperados
+            anotar("no obedece el numero pedido", pregunta, crudo,
+                   n_crudo == esperados, f"{esperados} elementos, dio {n_crudo}")
             detalle_listas.append({"pedidos": esperados, "dados": n_crudo})
             if n_crudo > n_rec and not ejemplo_lista_crudo:
                 ejemplo_lista_crudo = crudo   # un caso donde el recorte perdio elementos
@@ -260,8 +278,11 @@ def main():
             r, _ = pedir(pregunta, k); todas.append(r)
             total_rel += 1
             claves_planas = [sin_tildes(c) for c in claves]
-            ok_rel += any(c in sin_tildes(r) for c in claves_planas)
+            ok = any(c in sin_tildes(r) for c in claves_planas)
+            ok_rel += ok
             ok_rel_frase += any(c in sin_tildes(primera_frase(r)) for c in claves_planas)
+            anotar("no habla del tema", pregunta, r, ok,
+                   "deberia mencionar: " + ", ".join(claves))
         muestrario.append((pregunta, r))
 
     # --- conversaciones enteras: mide si aguanta el contexto acumulado ---
@@ -289,7 +310,13 @@ def main():
                 por_turno.setdefault(n, []).append(es_espanol(r))
                 if claves:
                     total_ident_conv += 1
-                    ok_ident_conv += any(c in sin_tildes(r) for c in claves)
+                    ok = any(c in sin_tildes(r) for c in claves)
+                    ok_ident_conv += ok
+                    anotar("identidad en conversacion", f"(turno {n}) {pregunta}", r, ok,
+                           ", ".join(claves))
+                juicio = es_espanol(r)
+                if juicio is False:
+                    anotar("responde en otro idioma", f"(turno {n}) {pregunta}", r, False, "español")
                 contexto += f" {r}{cierre}"
             muestrario.append((" / ".join(p for p, _ in conversacion), r))
 
@@ -404,6 +431,46 @@ def main():
     with open(args.historial, "a", encoding="utf-8") as f:
         f.write(json.dumps(res, ensure_ascii=False) + "\n")
     print(f"\n  Guardado en {args.historial} (una linea por examen, para ver la curva)")
+
+    # ---------------------------------------------------------------- errores
+    # Lo que de verdad sirve para mejorar: no el porcentaje, sino QUE
+    # contesto mal y a que. Se imprimen agrupados por tipo y se guardan
+    # todos, para poder leerlos, entender el patron y corregirlo.
+    if fallos:
+        from collections import Counter, defaultdict
+        conteo = Counter(f["categoria"] for f in fallos)
+        por_cat = defaultdict(list)
+        for f in fallos:
+            por_cat[f["categoria"]].append(f)
+
+        print("\n" + "=" * 62)
+        print(f"{'ERRORES A CORREGIR':^62}")
+        print("=" * 62)
+        for categoria, n in conteo.most_common():
+            print(f"\n[{categoria}]  {n} fallos")
+            vistos = set()
+            mostrados = 0
+            for f in por_cat[categoria]:
+                clave = (f["pregunta"], f["respuesta"][:60])
+                if clave in vistos:
+                    continue
+                vistos.add(clave)
+                print(f"  P: {f['pregunta']}")
+                print(f"  R: {(f['respuesta'] or '(vacia)')[:220]}")
+                if f["esperado"]:
+                    print(f"     esperado: {f['esperado']}")
+                mostrados += 1
+                if mostrados >= args.errores:
+                    break
+            if n > mostrados:
+                print(f"  ... y {n - mostrados} mas (todos en el archivo de errores)")
+
+        ruta_fallos = os.path.join(os.path.dirname(args.historial) or ".", "errores.jsonl")
+        with open(ruta_fallos, "w", encoding="utf-8") as f:
+            for e in fallos:
+                f.write(json.dumps({**e, "checkpoint": args.checkpoint,
+                                    "fecha": res["fecha"]}, ensure_ascii=False) + "\n")
+        print(f"\n  Los {len(fallos)} errores completos estan en {ruta_fallos}")
 
     if ejemplo_lista_crudo:
         print("\n--- una respuesta de lista, tal cual la escribe Atlas ---")
