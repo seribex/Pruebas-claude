@@ -30,6 +30,7 @@ Salida: dos archivos binarios del mismo largo (tokens y mascara) mas un
 import argparse
 import json
 import os
+import unicodedata
 import urllib.request
 
 import numpy as np
@@ -53,6 +54,36 @@ OPENHERMES = [
 
 # Conversacion = lista de turnos (lo que dice el usuario, lo que responde Atlas).
 Conversacion = list[tuple[str, str]]
+
+# Vocales con tilde. La ñ NO se toca: quitarle la tilde cambia la palabra
+# ("año" -> "ano") y ademas esta en el teclado espanol, asi que la gente si
+# la escribe. Las tildes de las vocales, en cambio, casi nadie las pone al
+# chatear.
+TILDES = {"á": "a", "é": "e", "í": "i", "ó": "o", "ú": "u",
+          "Á": "A", "É": "E", "Í": "I", "Ó": "O", "Ú": "U"}
+
+
+def como_en_un_chat(texto: str, variante: int) -> str:
+    """Reescribe lo que dice el usuario como lo escribiria en un chat.
+
+    Medido: el 82% de las preguntas del corpus llevan tildes o signos de
+    apertura, y ninguno de los mensajes reales del usuario los lleva. Atlas
+    fue entrenado con un usuario que escribe con ortografia perfecta, y eso
+    lo deja indefenso ante el usuario de verdad: sin tilde, "como estas" son
+    otras palabras ("yo como" + "estas cosas"), y respondia en consecuencia.
+
+    La respuesta de Atlas NO se toca: tiene que seguir contestando en
+    espanol correcto aunque le escriban sin tildes.
+    """
+    for con, sin in TILDES.items():
+        texto = texto.replace(con, sin)
+    if variante % 2 == 0:
+        texto = texto.replace("¿", "").replace("¡", "")
+    if variante % 3 == 0 and texto[:1].isupper():
+        texto = texto[:1].lower() + texto[1:]
+    if variante % 4 == 0:
+        texto = texto.rstrip("?!")
+    return texto
 
 
 def descargar(url: str, destino: str) -> str:
@@ -296,6 +327,11 @@ def main():
                              "anterior daba 9,600 ejemplos con solo 120 distintos, y la identidad "
                              "fallaba en cuanto preguntabas de otra forma.")
     parser.add_argument("--max_openhermes", type=int, default=200_000)
+    parser.add_argument("--variantes_chat", type=float, default=0.4,
+                        help="Fraccion del corpus que se duplica con la pregunta reescrita como "
+                             "en un chat: sin tildes en las vocales, sin signos de apertura y a "
+                             "veces en minuscula. La respuesta se deja en espanol correcto. 0 "
+                             "para desactivar.")
     parser.add_argument("--max_chars_respuesta", type=int, default=0,
                         help="Descartar las conversaciones con respuestas mas largas que esto. "
                              "0 = sin limite. Un modelo de 98M acierta durante las primeras "
@@ -328,6 +364,17 @@ def main():
         conteo_fuentes[fuente] = len(nuevas)
         conversaciones += nuevas
         print(f"  -> {len(nuevas):,} conversaciones\n")
+
+    # Variantes escritas como escribe la gente. Se ANADEN, no sustituyen: hay
+    # que entender las dos formas, no cambiar una por otra.
+    if args.variantes_chat > 0:
+        paso = max(1, round(1 / args.variantes_chat))
+        extra = [[(como_en_un_chat(u, i), a) for u, a in c]
+                 for i, c in enumerate(conversaciones) if i % paso == 0]
+        conversaciones = conversaciones + extra
+        print(f"Variantes de chat: anadidas {len(extra):,} conversaciones con la pregunta "
+              f"escrita sin tildes ni signos de apertura ({len(extra)/len(conversaciones)*100:.0f}% "
+              f"del total)\n")
 
     # El corpus traducido conserva alrededor de un 1% de respuestas sin
     # traducir. Parece poco, pero es el unico ingles que Atlas ve etiquetado
