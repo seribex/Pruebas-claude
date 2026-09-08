@@ -90,12 +90,43 @@ CONVERSACION = [
 #
 # Se escriben como escribe la gente en un chat: sin tildes, sin signos de
 # apertura y en minusculas. Atlas tiene que aguantarlo.
+# Cada turno es (pregunta, lo que una respuesta correcta debe contener).
+# None = no se comprueba el contenido, solo alimenta el contexto.
+#
+# Las preguntas de identidad aparecen aqui en los turnos 2 y 3 a proposito:
+# el examen las hacia solo con el contexto limpio y daba 82.5%, pero en el
+# chat real fallaban. Habia que medir tambien esa situacion.
 CONVERSACIONES = [
-    ["Hola", "¿Cómo te llamas?", "¿Quién te creó?"],
-    ["Que es la fotosintesis", "y para que sirve", "gracias"],
-    ["Hola, buenos dias", "que es una guerra", "que es el futbol"],
-    ["Dame 3 ideas para estudiar mejor", "cual es la mejor", "por que"],
+    [("Hola", None), ("¿Cómo te llamas?", ["atlas lumerak"]),
+     ("¿Quién te creó?", ["sebastian"])],
+    [("Que es la fotosintesis", None), ("y para que sirve", None),
+     ("como te llamas", ["atlas lumerak"])],
+    [("Hola, buenos dias", None), ("que es una guerra", None),
+     ("quien te creo", ["sebastian"])],
+    [("Dame 3 ideas para estudiar mejor", None), ("cual es la mejor", None),
+     ("por que", None)],
+    [("¿Cuál es la capital de Francia?", None), ("gracias", None),
+     ("¿Quién eres?", ["atlas lumerak"])],
 ]
+
+def primera_frase(texto: str) -> str:
+    """Lo que Atlas dice antes de su primer punto o salto de linea.
+
+    Existe para comprobar una sospecha concreta: que acierta al principio de
+    la respuesta y se descarrila despues. Si la relevancia de la primera
+    frase es claramente mayor que la del texto entero, la conclusion es que
+    le estamos pidiendo respuestas mas largas de las que puede sostener.
+    """
+    # Un punto detras de un numero AL PRINCIPIO DE LINEA es el marcador de un
+    # elemento de lista ("1. Manzana"), no el final de una frase. En cambio
+    # "El agua hierve a 100." si termina una frase. Los distingue la posicion.
+    marcadores = {m.end() - 1 for m in re.finditer(r"(?m)^[ \t]*\d+[.)]", texto)}
+    for m in re.finditer(r"[.!?](?=\s|$)|\n", texto):
+        if m.start() in marcadores:
+            continue
+        return texto[:m.end()].strip() or texto.strip()
+    return texto.strip()
+
 
 def intervalo(exitos: int, n: int, z: float = 1.96) -> tuple[float, float]:
     """Intervalo de confianza del 95% (metodo de Wilson).
@@ -223,12 +254,14 @@ def main():
         muestrario.append((pregunta, r))
 
     # --- relevancia ---
-    ok_rel = total_rel = 0
+    ok_rel = ok_rel_frase = total_rel = 0
     for pregunta, claves in RELEVANCIA:
         for k in range(args.muestras):
             r, _ = pedir(pregunta, k); todas.append(r)
             total_rel += 1
-            ok_rel += any(c in sin_tildes(r) for c in map(sin_tildes, claves))
+            claves_planas = [sin_tildes(c) for c in claves]
+            ok_rel += any(c in sin_tildes(r) for c in claves_planas)
+            ok_rel_frase += any(c in sin_tildes(primera_frase(r)) for c in claves_planas)
         muestrario.append((pregunta, r))
 
     # --- conversaciones enteras: mide si aguanta el contexto acumulado ---
@@ -236,10 +269,11 @@ def main():
     id_fin = id_fin_de_turno(tok)
     cierre = f"{FIN_TURNO}\n" if id_fin is not None else "\n\n"
     por_turno = {}          # numero de turno -> [juicios de idioma]
+    ok_ident_conv = total_ident_conv = 0
     for k in range(args.muestras):
         for conversacion in CONVERSACIONES:
             contexto = ""
-            for n, pregunta in enumerate(conversacion, start=1):
+            for n, (pregunta, claves) in enumerate(conversacion, start=1):
                 contexto += f"Usuario: {pregunta}\nAtlas:"
                 torch.manual_seed(2000 + k * 13 + n)
                 ids = tok.encode(contexto)[-bs:]
@@ -253,8 +287,11 @@ def main():
                 r = recortar_respuesta(tok.decode(sal[len(ids):]))
                 todas.append(r)
                 por_turno.setdefault(n, []).append(es_espanol(r))
+                if claves:
+                    total_ident_conv += 1
+                    ok_ident_conv += any(c in sin_tildes(r) for c in claves)
                 contexto += f" {r}{cierre}"
-            muestrario.append((" / ".join(conversacion), r))
+            muestrario.append((" / ".join(p for p, _ in conversacion), r))
 
     espanol_por_turno = {}
     for n, juicios in sorted(por_turno.items()):
@@ -300,6 +337,8 @@ def main():
         "obediencia_listas_tras_recorte": ok_listas / total_listas * 100,
         "detalle_listas": detalle_listas,
         "relevancia": ok_rel / total_rel * 100,
+        "relevancia_primera_frase": ok_rel_frase / total_rel * 100,
+        "identidad_en_conversacion": ok_ident_conv / total_ident_conv * 100 if total_ident_conv else float("nan"),
         "repeticion": repes,
         "parada_limpia": limpias,
         "respuestas_vacias": vacias,
@@ -319,6 +358,8 @@ def main():
         ("Responde en espanol", sum(decidibles), len(decidibles), "+"),
         ("Obedece el numero pedido", ok_listas_crudo, total_listas, "+"),
         ("Habla del tema preguntado", ok_rel, total_rel, "+"),
+        ("  ...en su primera frase", ok_rel_frase, total_rel, "+"),
+        ("Identidad EN CONVERSACION", ok_ident_conv, total_ident_conv, "+"),
         ("Termina la frase", sum(termina_limpio(r) for r in todas), len(todas), "+"),
         ("Se repite", None, None, "-"),
         ("Respuestas vacias", sum(not r.strip() for r in todas), len(todas), "-"),
@@ -354,7 +395,9 @@ def main():
         marca = " <-- correcto" if ped == dad else ""
         print(f"    pidio {ped}, dio {dad:2d}  ({n} veces){marca}")
 
-    print(f"\n  Longitud media: {largo:.0f} palabras por respuesta")
+    cortas = sum(len(r.split()) <= 25 for r in todas) / len(todas) * 100
+    print(f"\n  Longitud media: {largo:.0f} palabras por respuesta "
+          f"({cortas:.0f}% son de 25 palabras o menos)")
     print(f"  {len(todas)} respuestas en {time.time()-t0:.0f}s")
 
     os.makedirs(os.path.dirname(args.historial) or ".", exist_ok=True)

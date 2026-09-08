@@ -194,7 +194,10 @@ def cargar_openhermes(tmp: str, limite: int) -> list[Conversacion]:
 CARGADORES = {
     "oasst2": lambda tmp, args: cargar_oasst2(tmp),
     "dolly": lambda tmp, args: cargar_dolly(tmp),
-    "identidad": lambda tmp, args: identidad.ejemplos() * args.repetir_identidad,
+    # OJO: se le pasa el numero de repeticiones para que GENERE combinaciones
+    # distintas, en vez de multiplicar la lista (que daria copias identicas y
+    # es exactamente lo que hacia fallar la identidad).
+    "identidad": lambda tmp, args: identidad.ejemplos(args.repetir_identidad),
     "alpaca": lambda tmp, args: cargar_alpaca(tmp),
     "openhermes": lambda tmp, args: cargar_openhermes(tmp, args.max_openhermes),
 }
@@ -285,11 +288,19 @@ def main():
     parser.add_argument("--out_dir", default="atlas_lumerak/data")
     parser.add_argument("--nombre", default="atlas_sft")
     parser.add_argument("--tmp", default="atlas_lumerak/data/_tmp_sft")
-    parser.add_argument("--repetir_identidad", type=int, default=20,
-                        help="Cuantas veces repetir los ejemplos de identidad. Son pocos y muy "
-                             "importantes; repetirlos es la forma de que no se pierdan entre "
-                             "cientos de miles de ejemplos ajenos.")
+    parser.add_argument("--repetir_identidad", type=int, default=30,
+                        help="Cuantas pasadas de ejemplos de identidad generar. No son copias: "
+                             "en cada pasada la misma pregunta recibe una respuesta distinta, "
+                             "asi que lo que se repite es el hecho y no la frase. Con 30 salen "
+                             "unos 8,900 ejemplos de los cuales ~2,900 son distintos; la version "
+                             "anterior daba 9,600 ejemplos con solo 120 distintos, y la identidad "
+                             "fallaba en cuanto preguntabas de otra forma.")
     parser.add_argument("--max_openhermes", type=int, default=200_000)
+    parser.add_argument("--max_chars_respuesta", type=int, default=0,
+                        help="Descartar las conversaciones con respuestas mas largas que esto. "
+                             "0 = sin limite. Un modelo de 98M acierta durante las primeras "
+                             "15-25 palabras y despues inventa; entrenarlo con respuestas mas "
+                             "cortas hace que su salida se parezca a lo que sabe sostener.")
     parser.add_argument("--sin_filtro_idioma", action="store_true",
                         help="No descartar las conversaciones cuya respuesta no este en espanol.")
     parser.add_argument("--semilla", type=int, default=42)
@@ -323,6 +334,22 @@ def main():
     # como "asi se responde", y basta: en conversacion real el ingles
     # aparecia en 3 de cada 8 turnos. Un asistente en espanol no tiene por
     # que aprender de esas.
+    # Longitud: Atlas acierta durante las primeras 15-25 palabras y despues
+    # empieza a inventar -- las tres primeras frutas de la lista eran frutas,
+    # la cuarta fue una patata y la quinta un sapo. Pero el corpus tiene 569
+    # caracteres de respuesta de media, o sea que le estamos pidiendo escribir
+    # tres veces mas de lo que puede sostener, y lo que sobra lo rellena
+    # inventando. Aprender a responder corto y bien es preferible a aprender
+    # a responder largo y mal.
+    if args.max_chars_respuesta > 0:
+        antes = len(conversaciones)
+        conversaciones = [c for c in conversaciones
+                          if all(len(a) <= args.max_chars_respuesta for _, a in c)]
+        fuera = antes - len(conversaciones)
+        print(f"Filtro de longitud: descartadas {fuera:,} conversaciones "
+              f"({fuera / antes * 100:.1f}%) con alguna respuesta de mas de "
+              f"{args.max_chars_respuesta} caracteres\n")
+
     if not args.sin_filtro_idioma:
         antes = len(conversaciones)
         conversaciones = [c for c in conversaciones
