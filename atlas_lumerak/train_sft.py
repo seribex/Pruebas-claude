@@ -37,7 +37,7 @@ import numpy as np
 import torch
 
 from bpe_tokenizer import BPETokenizer
-from checkpoint_utils import ampliar_vocabulario
+from checkpoint_utils import ampliar_vocabulario, quitar_prefijo_compile
 from model import TransformerLanguageModel
 
 IGNORAR = -100  # valor que F.cross_entropy descarta (ver model.py)
@@ -70,15 +70,6 @@ class DatosSFT:
         # misma corrida en uno.
         y[v_mask[:, 1:] == 0] = IGNORAR
         return x.to(device), y.to(device)
-
-
-def quitar_prefijo_compile(estado: dict) -> dict:
-    """Un modelo envuelto por torch.compile guarda sus pesos con el prefijo
-    "_orig_mod." delante de cada nombre. Un checkpoint asi no se puede cargar
-    en un modelo normal. Se le quita si lo trae."""
-    if any(k.startswith("_orig_mod.") for k in estado):
-        return {k.removeprefix("_orig_mod."): v for k, v in estado.items()}
-    return estado
 
 
 def lote_pre(data: torch.Tensor, block_size: int, batch_size: int, device: str,

@@ -28,6 +28,10 @@ def main():
                         help="Tokenizador (por defecto: el que indique el checkpoint, en su misma carpeta).")
     parser.add_argument("--response_length", type=int, default=200)
     parser.add_argument("--log", default="atlas_lumerak/data/chat_log.jsonl")
+    parser.add_argument("--correcciones", default="atlas_lumerak/data/correcciones_tuyas.jsonl",
+                        help="Donde se guardan tus correcciones. Cada una es una leccion que "
+                             "ningun corpus del mundo tiene: nadie mas sabe como quieres que "
+                             "conteste Atlas.")
     parser.add_argument("--sin_recorte", action="store_true",
                         help="Mostrar todo lo que genera, sin cortar en la primera linea en blanco.")
     # Valores mas "frios" que los de generate.py a proposito. Conversando,
@@ -109,12 +113,36 @@ def main():
         turnos[-1] += f" {respuesta}{cierre}"
 
         util = input("¿Fue util esta respuesta? (s/n, Enter para omitir): ").strip().lower()
+
+        # Si estuvo mal, se le puede ensenar la respuesta correcta. Eso
+        # convierte cada equivocacion en material de entrenamiento: no solo
+        # "esto estuvo mal", sino "esto estuvo mal Y asi se hace bien", que
+        # es lo unico con lo que se puede corregir de verdad.
+        correccion = ""
+        if util == "n":
+            correccion = input("¿Cuál habría sido la respuesta correcta? "
+                               "(Enter para omitir): ").strip()
+            if correccion:
+                with open(args.correcciones, "a", encoding="utf-8") as f:
+                    f.write(json.dumps({
+                        "pregunta": entrada, "mala": respuesta, "buena": correccion,
+                        "motivo": "corregido por ti", "tipo": "humano",
+                        "checkpoint": args.checkpoint,
+                        "fecha": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    }, ensure_ascii=False) + "\n")
+                # La conversacion sigue con la respuesta BUENA en el contexto,
+                # no con la equivocada: asi el resto del dialogo no arrastra
+                # el error, igual que cuando corriges a alguien de palabra.
+                respuesta = correccion
+                print(f"Atlas (corregido): {respuesta}\n")
+
         with open(args.log, "a", encoding="utf-8") as f:
             f.write(json.dumps({
                 "timestamp": time.time(),
                 "usuario": entrada,
                 "atlas": respuesta,
                 "util": util == "s" if util in ("s", "n") else None,
+                "correccion": correccion or None,
             }, ensure_ascii=False) + "\n")
 
 

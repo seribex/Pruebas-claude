@@ -17,6 +17,15 @@ from bpe_tokenizer import BPETokenizer
 from model import TransformerLanguageModel
 
 
+def quitar_prefijo_compile(estado: dict) -> dict:
+    """Un modelo envuelto por torch.compile guarda sus pesos con el prefijo
+    "_orig_mod." delante de cada nombre. Un checkpoint asi no se puede cargar
+    en un modelo normal. Se le quita si lo trae."""
+    if any(k.startswith("_orig_mod.") for k in estado):
+        return {k.removeprefix("_orig_mod."): v for k, v in estado.items()}
+    return estado
+
+
 def ampliar_vocabulario(estado: dict, config: dict, nuevo_tamano: int):
     """Agranda las tablas de entrada y salida de un modelo ya entrenado.
 
