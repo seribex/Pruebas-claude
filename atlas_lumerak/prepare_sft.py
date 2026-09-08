@@ -37,6 +37,7 @@ import numpy as np
 import pandas as pd
 
 import identidad
+import listas
 from bpe_tokenizer import BPETokenizer, FIN_TURNO
 from text_cleaning import es_espanol, limpiar_texto
 
@@ -229,6 +230,11 @@ CARGADORES = {
     # distintas, en vez de multiplicar la lista (que daria copias identicas y
     # es exactamente lo que hacia fallar la identidad).
     "identidad": lambda tmp, args: identidad.ejemplos(args.repetir_identidad),
+    # Ensena a dar exactamente el numero de cosas que se piden. Medido: en el
+    # corpus real solo el 0.24% de las conversaciones pide un numero explicito
+    # Y responde con una lista contable. Atlas no desobedecia el numero: nunca
+    # vio la tarea.
+    "listas": lambda tmp, args: listas.ejemplos(args.repetir_listas),
     "alpaca": lambda tmp, args: cargar_alpaca(tmp),
     "openhermes": lambda tmp, args: cargar_openhermes(tmp, args.max_openhermes),
 }
@@ -327,6 +333,9 @@ def main():
                              "anterior daba 9,600 ejemplos con solo 120 distintos, y la identidad "
                              "fallaba en cuanto preguntabas de otra forma.")
     parser.add_argument("--max_openhermes", type=int, default=200_000)
+    parser.add_argument("--repetir_listas", type=int, default=50,
+                        help="Pasadas de ejemplos de 'dame N cosas' con exactamente N cosas. "
+                             "Cada pasada usa plantillas y elementos distintos.")
     parser.add_argument("--variantes_chat", type=float, default=0.4,
                         help="Fraccion del corpus que se duplica con la pregunta reescrita como "
                              "en un chat: sin tildes en las vocales, sin signos de apertura y a "
