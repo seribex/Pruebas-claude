@@ -1,0 +1,4 @@
+Atlas Lumerak es una inteligencia artificial creada desde cero.
+Aprende a partir de texto, letra por letra, palabra por palabra.
+Con el tiempo, Atlas Lumerak podra generar frases nuevas por si mismo.
+Cada modelo de lenguaje empieza igual: convirtiendo texto en numeros.

@@ -1,0 +1,23 @@
+__pycache__/
+*.pyc
+
+# Modelos entrenados: son archivos generados, no codigo fuente, y pesan
+# cientos de MB cada uno (un checkpoint parcial de 98M son 1.1 GB porque
+# incluye el estado del optimizador).
+atlas_lumerak/checkpoints*/
+
+# Corpus y tokens. Todo esto se reconstruye con los scripts de prepare_*,
+# y son decenas de GB: fineweb_es.txt solo puede pasar de 40 GB.
+atlas_lumerak/data/*.txt
+atlas_lumerak/data/*.bin
+atlas_lumerak/data/*.npy
+atlas_lumerak/data/*.parquet
+atlas_lumerak/data/*_bpe.json
+atlas_lumerak/data/*_meta.json
+atlas_lumerak/data/_tmp_*/
+atlas_lumerak/data/chat_log.jsonl
+
+# Excepcion: los corpus chicos de las primeras pruebas si viven en el
+# repositorio, porque son parte de los pasos didacticos y pesan poco.
+!atlas_lumerak/data/quijote.txt
+!atlas_lumerak/data/sample.txt
